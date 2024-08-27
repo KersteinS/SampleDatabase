@@ -1,0 +1,2 @@
+The command to initialize a go project is: go mod init SampleDatabase
+To install the sqlite3 driver I needed to enter the command: go get github.com/mattn/go-sqlite3
