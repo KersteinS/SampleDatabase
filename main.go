@@ -42,7 +42,7 @@ func createDatabase(db *sql.DB) {
 	);
 	create table Users (
 		UserName text primary key,
-		Password blob(64) not null
+		Password blob(64)
 	) without rowid;
 	create table Volunteers (
 		VolunteerID integer primary key autoincrement,
@@ -107,6 +107,7 @@ func createDatabase(db *sql.DB) {
 	execInTx(tx, initialTxQuery)
 	execInTx(tx, fillWeekdaysTxQuery)
 	execInTx(tx, fillMonthsTxQuery)
+	execInTx(tx, `insert into Users (UserName) values ("Seth")`)
 	fillDatesTableStmt, err := tx.Prepare(`insert into Dates (Month, Day, Year, Weekday) values (?, ?, ?, ?)`)
 	if err != nil {
 		log.Fatal(err)
@@ -114,7 +115,7 @@ func createDatabase(db *sql.DB) {
 	defer fillDatesTableStmt.Close()
 	initDate := time.Date(2023, time.January, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 365.25*40; i++ {
-		workingDate := initDate.AddDate(0, 0, i)
+		workingDate := initDate.AddDate(0, 0, i) // these should be a struct
 		workingMonth := int(workingDate.Month())
 		workingDay := workingDate.Day()
 		workingYear := workingDate.Year()
@@ -131,19 +132,7 @@ func createDatabase(db *sql.DB) {
 	}
 }
 
-func initDatabase() (*sql.DB, error) { // https://github.com/mattn/go-sqlite3/blob/master/_example/simple/simple.go
-	dbExists := false
-	if _, err := os.Stat(dbName); err == nil {
-		dbExists = true
-	}
-	db, err := sql.Open("sqlite3", dbName)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer db.Close()
-	if !dbExists {
-		createDatabase(db)
-	}
+func doBasicQuery(db *sql.DB) { // https://github.com/mattn/go-sqlite3/blob/master/_example/simple/simple.go
 	basicQuery := `select Month, Day, Year, MonthName, Weekday from dates join Months on Dates.Month = Months.MonthID where Dates.Year = 2024 and Dates.Day = 1;`
 	rows, err := db.Query(basicQuery)
 	if err != nil {
@@ -151,7 +140,7 @@ func initDatabase() (*sql.DB, error) { // https://github.com/mattn/go-sqlite3/bl
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var Month int
+		var Month int // these should be a struct
 		var Day int
 		var Year int
 		var MonthName string
@@ -166,15 +155,44 @@ func initDatabase() (*sql.DB, error) { // https://github.com/mattn/go-sqlite3/bl
 	if err != nil {
 		log.Fatal(err)
 	}
-	return db, nil
 }
 
+/*
+Implementation needs CRUD functions:
+Create
+Read
+Update
+Delete
+
+Weekdays, Months, and Dates are readonly.
+What data will be requested by the app?
+	List of schedule names for a user;
+	A schedule joined with its UFS (joined to its VFS (joined to its Volunteers)) and its WFS for a user;
+	Completed schedules for a user;
+What data will be sent by the app?
+	A schedule struct including all the data needed to create/update rows on Schedules, Volunteers, WFS, VFS, and UFS
+	A completed schedule struct to create a new row on CompletedSchedules
+What Delete options are needed?
+	Delete Schedule should delete a single row on Schedules and multiple rows on WFS, VFS, UFS, and CompletedSchedules
+	Delete Completed Schedule should delete a single row on CompletedSchedules
+
+This does not contemplate CRUDing users yet.
+*/
+
 func main() {
-	db, err := initDatabase()
+	dbExists := false
+	if _, err := os.Stat(dbName); err == nil {
+		dbExists = true
+	}
+	db, err := sql.Open("sqlite3", dbName)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	if !dbExists {
+		createDatabase(db)
+	}
+	doBasicQuery(db)
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Done. Press enter to exit executable.")
 	_, _ = reader.ReadString('\n')
