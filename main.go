@@ -3,96 +3,128 @@ package main
 import (
 	"bufio"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 const dbName = "./sample.db?_foreign_keys=on"
 
-func createDatabase(db *sql.DB) { //add not null to most things in sqlStmt
-	sqlStmt := `
+func execInTx(tx *sql.Tx, query string) {
+	_, err := tx.Exec(query)
+	if err != nil {
+		log.Printf("%q: %s\n", err, query)
+		log.Fatal(err)
+	}
+}
+
+func createDatabase(db *sql.DB) {
+	initialTxQuery := `
 	create table Weekdays (
-		DayID integer primary key autoincrement,
-		DayName text
+		WeekdayID integer primary key autoincrement,
+		WeekdayName text not null unique
 	);
 	create table Months (
 		MonthID integer primary key autoincrement,
-		MonthName text not null
+		MonthName text not null unique
 	);
 	create table Dates (
 		DateID integer primary key autoincrement,
 		Month integer not null,
 		Day integer not null,
 		Year integer not null,
+		Weekday text not null,
 		foreign key (Month) references Months(MonthID),
-		foreign key (Day) references Weekdays(DayID)
+		foreign key (Weekday) references Weekdays(WeekdayName)
 	);
 	create table Users (
-		UserID text primary key,
+		UserName text primary key,
 		Password blob(64) not null
 	) without rowid;
 	create table Volunteers (
 		VolunteerID integer primary key autoincrement,
-		foreign key (UserID) references Users(UserID),
-		VolunteerName text not null
+		VolunteerName text not null,
+		User text,
+		foreign key (User) references Users(UserName)
 	);
-	`
-	/*create table Schedules (
+	create table Schedules (
 		ScheduleID integer primary key autoincrement,
-		foreign key (UserID) references Users(UserID),
 		ScheduleName text not null,
-		foreign key (StartDate) references Dates(DateID),
-		foreign key (EndDate) references Dates(DateID),
 		ShiftsOff integer not null,
-		VolunteersPerShift integer not null
+		VolunteersPerShift integer not null,
+		User text,
+		StartDate integer,
+		EndDate integer,
+		foreign key (User) references Users(UserName),
+		foreign key (StartDate) references Dates(DateID),
+		foreign key (EndDate) references Dates(DateID)
 	);
 	create table WeekdaysForSchedule (
 		WFSID integer primary key autoincrement,
-		foreign key (UserID) references Users(UserID),
-		foreign key (Weekday) references Weekdays(DayID),
+		User text,
+		Weekday text,
+		Schedule integer,
+		foreign key (User) references Users(UserName),
+		foreign key (Weekday) references Weekdays(WeekdayName),
 		foreign key (Schedule) references Schedules(ScheduleID)
 	);
 	create table VolunteersForSchedule (
 		VFSID integer primary key autoincrement,
-		foreign key (UserID) references Users(UserID),
+		User text,
+		Schedule integer,
+		Volunteer integer,
+		foreign key (User) references Users(UserName),
 		foreign key (Schedule) references Schedules(ScheduleID),
-		foreign key (Volunteer) refernces Volunteers(VolunteerID)
+		foreign key (Volunteer) references Volunteers(VolunteerID)
 	);
 	create table UnavailabilitiesForSchedule (
 		UFSID integer primary key autoincrement,
-		foreign key (UserID) references Users(UserID),
+		User text,
+		VolunteerForSchedule integer,
+		Date integer,
+		foreign key (User) references Users(UserName),
 		foreign key (VolunteerForSchedule) references VolunteersForSchedule(VFSID),
-		foreign key (Date) refernces Dates(DateID)
+		foreign key (Date) references Dates(DateID)
 	);
 	create table CompletedSchedules (
 		CScheduleID integer primary key autoincrement,
-		foreign key (UserID) references Users(UserID),
-		foreign key (Schedule) references Schedules(ScheduleID),
-		ScheduleData text not null
+		ScheduleData text not null,
+		User text,
+		Schedule integer,
+		foreign key (User) references Users(UserName),
+		foreign key (Schedule) references Schedules(ScheduleID)
 	);
-	`*/
+	`
+	fillWeekdaysTxQuery := `insert into Weekdays (WeekdayName) values ("Sunday"), ("Monday"), ("Tuesday"), ("Wednesday"), ("Thursday"), ("Friday"), ("Saturday");`
+	fillMonthsTxQuery := `insert into Months (MonthName) values ("January"), ("February"), ("March"), ("April"), ("May"), ("June"), ("July"), ("August"), ("September"), ("October"), ("November"), ("December");`
 	tx, err := db.Begin()
 	if err != nil {
 		log.Fatal(err)
 	}
-	_, err = tx.Exec(sqlStmt)
-	if err != nil {
-		log.Printf("%q: %s\n", err, sqlStmt)
-		log.Fatal(err)
-	}
-	/*stmt, err := tx.Prepare("insert into foo(id, name) values(?, ?)")
+	execInTx(tx, initialTxQuery)
+	execInTx(tx, fillWeekdaysTxQuery)
+	execInTx(tx, fillMonthsTxQuery)
+	fillDatesTableStmt, err := tx.Prepare(`insert into Dates (Month, Day, Year, Weekday) values (?, ?, ?, ?)`)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer stmt.Close()
-	for i := 0; i < 100; i++ {
-		_, err = stmt.Exec(i, fmt.Sprintf("こんにちは世界%03d", i))
+	defer fillDatesTableStmt.Close()
+	initDate := time.Date(2023, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 365.25*40; i++ {
+		workingDate := initDate.AddDate(0, 0, i)
+		workingMonth := int(workingDate.Month())
+		workingDay := workingDate.Day()
+		workingYear := workingDate.Year()
+		workingWeekday := fmt.Sprint(workingDate.Weekday())
+		//log.Println(workingMonth, workingDay, workingYear, workingWeekday)
+		_, err = fillDatesTableStmt.Exec(workingMonth, workingDay, workingYear, workingWeekday)
 		if err != nil {
 			log.Fatal(err)
 		}
-	}*/
+	}
 	err = tx.Commit()
 	if err != nil {
 		log.Fatal(err)
@@ -112,66 +144,28 @@ func initDatabase() (*sql.DB, error) { // https://github.com/mattn/go-sqlite3/bl
 	if !dbExists {
 		createDatabase(db)
 	}
-	/*
-		rows, err := db.Query("select id, name from foo")
+	basicQuery := `select Month, Day, Year, MonthName, Weekday from dates join Months on Dates.Month = Months.MonthID where Dates.Year = 2024 and Dates.Day = 1;`
+	rows, err := db.Query(basicQuery)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var Month int
+		var Day int
+		var Year int
+		var MonthName string
+		var WeekdayName string
+		err = rows.Scan(&Month, &Day, &Year, &MonthName, &WeekdayName)
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var name string
-			err = rows.Scan(&id, &name)
-			if err != nil {
-				log.Fatal(err)
-			}
-			fmt.Println(id, name)
-		}
-		err = rows.Err()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		stmt, err := db.Prepare("select name from foo where id = ?")
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer stmt.Close()
-		var name string
-		err = stmt.QueryRow("3").Scan(&name)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(name)
-
-		_, err = db.Exec("delete from foo")
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		_, err = db.Exec("insert into foo(id, name) values(1, 'foo'), (2, 'bar'), (3, 'baz')")
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		rows, err = db.Query("select id, name from foo")
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var name string
-			err = rows.Scan(&id, &name)
-			if err != nil {
-				log.Fatal(err)
-			}
-			fmt.Println(id, name)
-		}
-		err = rows.Err()
-		if err != nil {
-			log.Fatal(err)
-		}*/
+		fmt.Printf("%s (%d) %d, %d - %s\n", MonthName, Month, Day, Year, WeekdayName)
+	}
+	err = rows.Err()
+	if err != nil {
+		log.Fatal(err)
+	}
 	return db, nil
 }
 
@@ -182,5 +176,6 @@ func main() {
 	}
 	defer db.Close()
 	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("Done. Press enter to exit executable.")
 	_, _ = reader.ReadString('\n')
 }

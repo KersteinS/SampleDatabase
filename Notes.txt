@@ -3,3 +3,4 @@ To install the sqlite3 driver I needed to enter the command: go get github.com/m
 To connect to GitHub through ssh as KersteinS I had to add a config file to .ssh, and I had to set the origin URL to [host for KersteinS in config]:KersteinS/SampleDatabase.git
 
 In sqlite3, blob means binary large object.
+Foreign keys are restraints on a table, and they need to specify an existing column on the that table in addition to referencing an exising column on another table.
