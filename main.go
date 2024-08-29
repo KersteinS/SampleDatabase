@@ -13,6 +13,123 @@ import (
 
 const dbName = "./sample.db?_foreign_keys=on"
 
+type Env struct { //define in main module
+	sample SampleModel //would need to reference submodule with ".", i.e. models.SampleModel.
+}
+
+type SampleModel struct { //define in submodule for db model
+	DB *sql.DB
+}
+
+type thisDate struct { //test, not for real use
+	Month       int
+	Day         int
+	Year        int
+	MonthName   string
+	WeekdayName string
+}
+
+func (sm SampleModel) BasicSelectQuery() ([]thisDate, error) { // test, not for real use
+	basicQuery := `select Month, Day, Year, MonthName, Weekday from dates join Months on Dates.Month = Months.MonthID where Dates.Year = 2024 and Dates.Day = 1;`
+	var result []thisDate
+	rows, err := sm.DB.Query(basicQuery)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		aDate := thisDate{}
+		err = rows.Scan(&aDate.Month, &aDate.Day, &aDate.Year, &aDate.MonthName, &aDate.WeekdayName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		result = append(result, aDate)
+	}
+	err = rows.Err()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return result, nil
+}
+
+type weekday struct {
+	WeekdayID   int
+	WeekdayName string
+}
+
+type month struct {
+	MonthID   int
+	MonthName string
+}
+
+type date struct {
+	DateID  int
+	Month   int
+	Day     int
+	Year    int
+	Weekday string
+}
+
+type user struct {
+	UserName string
+	Password []byte
+}
+
+type volunteer struct {
+	VolunteerID   int
+	VolunteerName string
+	User          string
+}
+
+type schedule struct {
+	ScheduleID         int
+	ScheduleName       string
+	ShiftsOff          int
+	VolunteersPerShift int
+	User               string
+	StartDate          int
+	EndDate            int
+}
+
+type weekdayForSchedule struct {
+	WFSID    int
+	User     string
+	Weekday  string
+	Schedule int
+}
+
+type volunteerForSchedule struct {
+	VFSID     int
+	User      string
+	Schedule  int
+	Volunteer int
+}
+
+type unavailabilityForSchedule struct {
+	UFSID                int
+	User                 string
+	VolunteerForSchedule int
+	Date                 int
+}
+
+type completedSchedule struct {
+	CScheduleID  string
+	ScheduleData string
+	User         string
+	Schedule     string
+}
+
+type SendReceiveDataStruct struct {
+	User                      string
+	ScheduleName              string
+	VolunteerAvailabilityData []map[string][]string // this is where most of the fun is. Need to create two functions: one to encode the db values into this format, one to decode this format into structs for insertion into the db
+	StartDate                 string
+	EndDate                   string
+	WeekdaysForSchedule       []string
+	ShiftsOff                 int
+	VolunteersPerShift        int
+}
+
 func execInTx(tx *sql.Tx, query string) {
 	_, err := tx.Exec(query)
 	if err != nil {
@@ -21,7 +138,7 @@ func execInTx(tx *sql.Tx, query string) {
 	}
 }
 
-func createDatabase(db *sql.DB) {
+func (sm SampleModel) CreateDatabase() {
 	initialTxQuery := `
 	create table Weekdays (
 		WeekdayID integer primary key autoincrement,
@@ -100,7 +217,7 @@ func createDatabase(db *sql.DB) {
 	`
 	fillWeekdaysTxQuery := `insert into Weekdays (WeekdayName) values ("Sunday"), ("Monday"), ("Tuesday"), ("Wednesday"), ("Thursday"), ("Friday"), ("Saturday");`
 	fillMonthsTxQuery := `insert into Months (MonthName) values ("January"), ("February"), ("March"), ("April"), ("May"), ("June"), ("July"), ("August"), ("September"), ("October"), ("November"), ("December");`
-	tx, err := db.Begin()
+	tx, err := sm.DB.Begin()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -132,29 +249,26 @@ func createDatabase(db *sql.DB) {
 	}
 }
 
-func doBasicQuery(db *sql.DB) { // https://github.com/mattn/go-sqlite3/blob/master/_example/simple/simple.go
-	basicQuery := `select Month, Day, Year, MonthName, Weekday from dates join Months on Dates.Month = Months.MonthID where Dates.Year = 2024 and Dates.Day = 1;`
-	rows, err := db.Query(basicQuery)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var Month int // these should be a struct
-		var Day int
-		var Year int
-		var MonthName string
-		var WeekdayName string
-		err = rows.Scan(&Month, &Day, &Year, &MonthName, &WeekdayName)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Printf("%s (%d) %d, %d - %s\n", MonthName, Month, Day, Year, WeekdayName)
-	}
-	err = rows.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
+func (sm SampleModel) SendScheduleNames(user string) []string {
+	var result []string
+	return result
+}
+
+func (sm SampleModel) FetchAndSendData(user string, schedule string) SendReceiveDataStruct {
+	var result SendReceiveDataStruct
+	return result
+}
+
+func (sm SampleModel) RecieveAndStoreData(data SendReceiveDataStruct) { // should this return a completed/failed value?
+	// fill this in
+}
+
+func (sm SampleModel) RequestDeleteSchedule(user string, schedule string) { // figure out what to return as a completed/failed value
+	// fill this in
+}
+
+func (sm SampleModel) RequestDeleteCompletedSchedule(user string, schedule string, toDelete string) { // how to identify what to delete? Figure out what to return as a completed/failed value
+	// fill this in
 }
 
 /*
@@ -188,12 +302,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
-	if !dbExists {
-		createDatabase(db)
+	env := &Env{
+		sample: SampleModel{DB: db},
 	}
-	doBasicQuery(db)
+	defer env.sample.DB.Close()
+	if !dbExists {
+		env.sample.CreateDatabase()
+	}
+	fmt.Println(env.sample.BasicSelectQuery())
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Done. Press enter to exit executable.")
 	_, _ = reader.ReadString('\n')
+	fmt.Print(weekday{}, month{}, date{}, user{}, volunteer{}, schedule{}, weekdayForSchedule{}, volunteerForSchedule{}, unavailabilityForSchedule{}, completedSchedule{})
 }
