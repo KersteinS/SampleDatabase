@@ -362,20 +362,20 @@ func (sm SampleModel) RequestDates(dates []date) []date {
 	var result []date
 	rows, err := sm.DB.Query(dateQuery)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error in Request Dates query: %v\n%s", err, dateQuery)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var dateStruct date
 		err = rows.Scan(&dateStruct.DateID, &dateStruct.Month, &dateStruct.Day, &dateStruct.Year, &dateStruct.Weekday)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("Error in Request Dates loop: %v", err)
 		}
 		result = append(result, dateStruct)
 	}
 	err = rows.Err()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error in Request Dates rows.Err(): %v", err)
 	}
 	return result
 }
@@ -746,7 +746,7 @@ func (sm SampleModel) CreateVFS(currentUser string, toCreate []volunteerForSched
 }
 
 func (sm SampleModel) RequestVFS(currentUser string, volunteersForSchedule []volunteerForSchedule) []volunteerForSchedule {
-	VFSQuery := fmt.Sprintf(`select VFSID, User, Schedule, Volunteer from VolunteersForSchedule where User = "%s"`, currentUser)
+	VFSQuery := fmt.Sprintf(`select * from VolunteersForSchedule where User = "%s"`, currentUser)
 	if len(volunteersForSchedule) > 0 {
 		if testEmpty(volunteersForSchedule, volunteerForSchedule{}) {
 			log.Fatal("RequestVFS failed because one of the values in volunteersForSchedule had an empty/default values volunteerForSchedule struct")
