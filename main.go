@@ -134,7 +134,7 @@ type SendReceiveDataStruct struct {
 	CompletedSchedules        []string
 }
 
-func csvSlice(stringSlice []string) string {
+func CsvSlice(stringSlice []string) string {
 	jsonEncodedSlice, err := json.Marshal(stringSlice)
 	if err != nil {
 		log.Fatal(err)
@@ -282,7 +282,7 @@ func (sm SampleModel) CreateDatabase() {
 
 func (sm SampleModel) SendScheduleNames(currentUser string) []string {
 	var result []string
-	scheduleStructs := sm.RequestSchedules(currentUser, []string{})
+	scheduleStructs := sm.RequestSchedules(currentUser, []schedule{})
 	for i := 0; i < len(scheduleStructs); i++ {
 		result = append(result, scheduleStructs[i].ScheduleName)
 	}
@@ -291,7 +291,7 @@ func (sm SampleModel) SendScheduleNames(currentUser string) []string {
 
 func (sm SampleModel) FetchAndSendData(currentUser string, currentSchedule string) SendReceiveDataStruct {
 	var result SendReceiveDataStruct
-	scheduleQuery := fmt.Sprintf(`select StartDate, EndDate, ShiftsOff, VolunteersPerShift from Schedules where User = %s and ScheduleName = %s`, currentUser, currentSchedule)
+	scheduleQuery := fmt.Sprintf(`select StartDate, EndDate, ShiftsOff, VolunteersPerShift from Schedules where User = "%s" and ScheduleName = "%s"`, currentUser, currentSchedule)
 	fmt.Println(scheduleQuery)
 	result.User = currentUser
 	result.ScheduleName = currentSchedule
@@ -302,117 +302,81 @@ func (sm SampleModel) RecieveAndStoreData(data SendReceiveDataStruct) { // shoul
 	// fill this in
 }
 
-func (sm SampleModel) RequestDate(currentUser string, partialDate date) date { // convert this
-	dateQuery := fmt.Sprintf(`select DateID from Dates where Month = %d and Day = %d and Year = %d`, partialDate.Month, partialDate.Day, partialDate.Year)
+func (sm SampleModel) RequestDates(dates []date) []date {
+	dateQuery := `select * from Dates`
+	if len(dates) > 0 {
+		if testEmpty(dates, date{}) {
+			log.Fatal("RequestDates failed because one of the values in dates had an empty/default values date struct")
+		}
+		dateQuery = fmt.Sprintf(`%s where (`, dateQuery)
+	} else {
+		log.Fatal("RequestDates failed because the dates argument was an empty slice. At least one date must be requested. ")
+	}
+	for i := 0; i < len(dates); i++ {
+		count := countGTZero([]int{dates[i].DateID, dates[i].Month, dates[i].Day, dates[i].Year, len(dates[i].Weekday)})
+		// count must be at least 1 because the testEmpty check passed
+		//fmt.Println(count)
+		dateQuery = fmt.Sprintf(`%s(`, dateQuery)
+		if dates[i].DateID > 0 {
+			dateQuery = fmt.Sprintf(`%sDateID = %d`, dateQuery, dates[i].DateID)
+			count--
+			if count > 0 {
+				dateQuery = fmt.Sprintf(`%s and `, dateQuery)
+			}
+		}
+		if dates[i].Month > 0 {
+			dateQuery = fmt.Sprintf(`%sMonth = %d`, dateQuery, dates[i].Month)
+			count--
+			if count > 0 {
+				dateQuery = fmt.Sprintf(`%s and `, dateQuery)
+			}
+		}
+		if dates[i].Day > 0 {
+			dateQuery = fmt.Sprintf(`%sDay = %d`, dateQuery, dates[i].Day)
+			count--
+			if count > 0 {
+				dateQuery = fmt.Sprintf(`%s and `, dateQuery)
+			}
+		}
+		if dates[i].Year > 0 {
+			dateQuery = fmt.Sprintf(`%sYear = %d`, dateQuery, dates[i].Year)
+			count--
+			if count > 0 {
+				dateQuery = fmt.Sprintf(`%s and `, dateQuery)
+			}
+		}
+		if len(dates[i].Weekday) > 0 {
+			dateQuery = fmt.Sprintf(`%sWeekday = "%s"`, dateQuery, dates[i].Weekday)
+		}
+		dateQuery = fmt.Sprintf(`%s)`, dateQuery)
+		if i+1 < len(dates) {
+			dateQuery = fmt.Sprintf(`%s or `, dateQuery)
+		}
+		//fmt.Println(count)
+		//fmt.Println(dateQuery)
+	}
+	if len(dates) > 0 {
+		dateQuery = fmt.Sprintf(`%s)`, dateQuery)
+	}
+	//fmt.Println(dateQuery)
+	var result []date
 	rows, err := sm.DB.Query(dateQuery)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer rows.Close()
-	var sanityCheck []date
 	for rows.Next() {
-		var resultDate date
-		err = rows.Scan(&resultDate.DateID)
+		var dateStruct date
+		err = rows.Scan(&dateStruct.DateID, &dateStruct.Month, &dateStruct.Day, &dateStruct.Year, &dateStruct.Weekday)
 		if err != nil {
 			log.Fatal(err)
 		}
-		sanityCheck = append(sanityCheck, resultDate)
+		result = append(result, dateStruct)
 	}
 	err = rows.Err()
 	if err != nil {
 		log.Fatal(err)
 	}
-	if len(sanityCheck) != 1 {
-		log.Fatalf("Sanity check in RequestDate failed. %d dates were returned.", len(sanityCheck))
-	}
-	return sanityCheck[0]
-}
-
-func (sm SampleModel) CreateSchedules(user string, toCreate []schedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	tx, err := sm.DB.Begin()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fillSchedulesTableString := `insert into Schedules (ScheduleName, ShiftsOff, VolunteersPerShift, User, StartDate, EndDate) values (?, ?, ?, ?, ?, ?)`
-	fillSchedulesTableStmt, err := tx.Prepare(fillSchedulesTableString)
-	if err != nil {
-		log.Fatalf("Error in Create Schedules statement: %v\n%s", err, fillSchedulesTableString)
-	}
-	defer fillSchedulesTableStmt.Close()
-	for i := 0; i < len(toCreate); i++ {
-		_, err = fillSchedulesTableStmt.Exec(toCreate[i].ScheduleName, toCreate[i].ShiftsOff, toCreate[i].VolunteersPerShift, toCreate[i].User, toCreate[i].StartDate, toCreate[i].EndDate)
-		if err != nil {
-			log.Fatalf("Error in Create Schedules loop: %v", err)
-		}
-	}
-	err = tx.Commit()
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func (sm SampleModel) RequestSchedules(currentUser string, schedules []string) []schedule { // Convert this
-	var schedulesQuery string
-	if len(schedules) == 0 {
-		schedulesQuery = fmt.Sprintf(`select * from Schedules where User = "%s"`, currentUser)
-	} else {
-		schedulesQuery = fmt.Sprintf(`select * from Schedules where User = "%s" and ScheduleName in (%s)`, currentUser, csvSlice(schedules))
-	}
-	var result []schedule
-	rows, err := sm.DB.Query(schedulesQuery)
-	if err != nil {
-		log.Fatalf("Error in Request Schedules query: %v\n%s", err, schedulesQuery)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var userSchedule schedule
-		err = rows.Scan(&userSchedule.ScheduleID, &userSchedule.ScheduleName, &userSchedule.ShiftsOff, &userSchedule.VolunteersPerShift, &userSchedule.User, &userSchedule.StartDate, &userSchedule.EndDate)
-		if err != nil {
-			log.Fatalf("Error in Request Schedules loop: %v", err)
-		}
-		result = append(result, userSchedule)
-	}
-	err = rows.Err()
-	if err != nil {
-		log.Fatalf("Error in Request Schedules rows.Err(): %v", err)
-	}
-	// Sanity Check
-	if len(schedules) > 0 && len(result) != len(schedules) {
-		log.Fatalf("Sanity check in RequestSchedules failed. %d schedules requested, %d schedules returned .", len(schedules), len(result))
-	}
-	return result
-}
-
-func (sm SampleModel) CreateCompletedSchedule(currentUser string, toCreate completedSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in
-}
-
-func (sm SampleModel) CreateWFS(currentUser string, toCreate []weekdayForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	tx, err := sm.DB.Begin()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fillWFSTableString := `insert into WeekdaysForSchedule (User, Weekday, Schedule) values (?, ?, ?)`
-	fillWFSTableStmt, err := tx.Prepare(fillWFSTableString)
-	if err != nil {
-		log.Fatalf("Error in Create WFS statement: %v\n%s", err, fillWFSTableString)
-	}
-	defer fillWFSTableStmt.Close()
-	for i := 0; i < len(toCreate); i++ {
-		_, err = fillWFSTableStmt.Exec(toCreate[i].User, toCreate[i].Weekday, toCreate[i].Schedule)
-		if err != nil {
-			log.Fatalf("Error in Create WFS loop: %v", err)
-		}
-	}
-	err = tx.Commit()
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func (sm SampleModel) RequestWFS(currentUser string, weekdaysForSchedule []weekdayForSchedule) []weekdayForSchedule {
-	// fill this in
-	var result []weekdayForSchedule
 	return result
 }
 
@@ -448,37 +412,38 @@ func (sm SampleModel) RequestVolunteers(currentUser string, volunteers []volunte
 		volunteersQuery = fmt.Sprintf(`%s and (`, volunteersQuery)
 	}
 	for i := 0; i < len(volunteers); i++ {
-		count := countGTZero([]int{volunteers[i].VolunteerID, len(volunteers[i].VolunteerName), len(volunteers[i].User)}) > 1
-		if count {
-			volunteersQuery = fmt.Sprintf(`%s(`, volunteersQuery)
-		}
+		count := countGTZero([]int{volunteers[i].VolunteerID, len(volunteers[i].VolunteerName), len(volunteers[i].User)})
+		// count must be at least 1 because the testEmpty check passed
+		//fmt.Println(count)
+		volunteersQuery = fmt.Sprintf(`%s(`, volunteersQuery)
 		if volunteers[i].VolunteerID > 0 {
 			volunteersQuery = fmt.Sprintf(`%sVolunteerID = %d`, volunteersQuery, volunteers[i].VolunteerID)
-			if count {
+			count--
+			if count > 0 {
 				volunteersQuery = fmt.Sprintf(`%s and `, volunteersQuery)
 			}
 		}
 		if len(volunteers[i].VolunteerName) > 0 {
 			volunteersQuery = fmt.Sprintf(`%sVolunteerName = "%s"`, volunteersQuery, volunteers[i].VolunteerName)
-			if count {
+			count--
+			if count > 0 {
 				volunteersQuery = fmt.Sprintf(`%s and `, volunteersQuery)
 			}
 		}
 		if len(volunteers[i].User) > 0 {
 			volunteersQuery = fmt.Sprintf(`%sUser = "%s"`, volunteersQuery, volunteers[i].User)
 		}
-		if count {
-			volunteersQuery = fmt.Sprintf(`%s)`, volunteersQuery)
-		}
+		volunteersQuery = fmt.Sprintf(`%s)`, volunteersQuery)
 		if i+1 < len(volunteers) {
 			volunteersQuery = fmt.Sprintf(`%s or `, volunteersQuery)
 		}
+		//fmt.Println(count)
 		//fmt.Println(volunteersQuery)
 	}
 	if len(volunteers) > 0 {
 		volunteersQuery = fmt.Sprintf(`%s)`, volunteersQuery)
 	}
-	fmt.Println(volunteersQuery)
+	//fmt.Println(volunteersQuery)
 	var result []volunteer
 	rows, err := sm.DB.Query(volunteersQuery)
 	if err != nil {
@@ -497,8 +462,264 @@ func (sm SampleModel) RequestVolunteers(currentUser string, volunteers []volunte
 	if err != nil {
 		log.Fatalf("Error in Request Volunteers rows.Err(): %v", err)
 	}
-	// Sanity check unlikely to help much. If two volunteer entries are provided and they return the same VolunteerID, then the sanity check would falsely fail.
 	return result
+}
+
+func (sm SampleModel) UpdateVolunteers(currentUser string, existingVolunteers []volunteer) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) DeleteVolunteers(currentUser string, existingVolunteers []volunteer) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) CleanOrphanedVolunteers(currentUser string) { // Need to delete all volunteers who are not referenced by a VFS/UFS. Figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in. If it's not in VFS or UFS but has the same UserName, delete it. I shouldn't need to put any sql in here. I should use the CRUD functions.
+}
+
+func (sm SampleModel) CreateSchedules(user string, toCreate []schedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fillSchedulesTableString := `insert into Schedules (ScheduleName, ShiftsOff, VolunteersPerShift, User, StartDate, EndDate) values (?, ?, ?, ?, ?, ?)`
+	fillSchedulesTableStmt, err := tx.Prepare(fillSchedulesTableString)
+	if err != nil {
+		log.Fatalf("Error in Create Schedules statement: %v\n%s", err, fillSchedulesTableString)
+	}
+	defer fillSchedulesTableStmt.Close()
+	for i := 0; i < len(toCreate); i++ {
+		_, err = fillSchedulesTableStmt.Exec(toCreate[i].ScheduleName, toCreate[i].ShiftsOff, toCreate[i].VolunteersPerShift, toCreate[i].User, toCreate[i].StartDate, toCreate[i].EndDate)
+		if err != nil {
+			log.Fatalf("Error in Create Schedules loop: %v", err)
+		}
+	}
+	err = tx.Commit()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+// This function is the simple version of RequestSchedulesExtended and does not allow ShiftsOff = 0 to be queried.
+func (sm SampleModel) RequestSchedules(currentUser string, schedules []schedule) []schedule {
+	return sm.RequestSchedulesExtended(currentUser, schedules, false)
+}
+
+// This version of RequestSchedules allows ShiftsOff = 0 to be queried, but any default schedule structs will have ShiftsOff: 0 implicitly, so ShiftsOff must be set to a desired value or to -1 to be ignored.
+func (sm SampleModel) RequestSchedulesExtended(currentUser string, schedules []schedule, includeShiftsOff0 bool) []schedule {
+	schedulesQuery := fmt.Sprintf(`select * from Schedules where User = "%s"`, currentUser)
+	if len(schedules) > 0 {
+		var checkAgainst schedule
+		if includeShiftsOff0 {
+			checkAgainst = schedule{ShiftsOff: -1}
+		} else {
+			checkAgainst = schedule{}
+		}
+		if testEmpty(schedules, checkAgainst) {
+			log.Fatal("RequestSchedules failed because one of the values in schedules had an empty/default values schedule struct")
+		}
+		schedulesQuery = fmt.Sprintf(`%s and (`, schedulesQuery)
+	}
+	for i := 0; i < len(schedules); i++ {
+		var count int
+		if includeShiftsOff0 {
+			count = countGTZero([]int{schedules[i].ScheduleID, len(schedules[i].ScheduleName), schedules[i].ShiftsOff + 1, schedules[i].VolunteersPerShift, len(schedules[i].User), schedules[i].StartDate, schedules[i].EndDate})
+		} else {
+			count = countGTZero([]int{schedules[i].ScheduleID, len(schedules[i].ScheduleName), schedules[i].ShiftsOff, schedules[i].VolunteersPerShift, len(schedules[i].User), schedules[i].StartDate, schedules[i].EndDate})
+		}
+		// count must be at least 1 because the testEmpty check passed
+		//fmt.Println(count)
+		schedulesQuery = fmt.Sprintf(`%s(`, schedulesQuery)
+		if schedules[i].ScheduleID > 0 {
+			schedulesQuery = fmt.Sprintf(`%sScheduleID = %d`, schedulesQuery, schedules[i].ScheduleID)
+			count--
+			if count > 0 {
+				schedulesQuery = fmt.Sprintf(`%s and `, schedulesQuery)
+			}
+		}
+		if len(schedules[i].ScheduleName) > 0 {
+			schedulesQuery = fmt.Sprintf(`%sScheduleName = "%s"`, schedulesQuery, schedules[i].ScheduleName)
+			count--
+			if count > 0 {
+				schedulesQuery = fmt.Sprintf(`%s and `, schedulesQuery)
+			}
+		}
+		if schedules[i].ShiftsOff > 0 || includeShiftsOff0 && schedules[i].ShiftsOff > -1 {
+			schedulesQuery = fmt.Sprintf(`%sShiftsOff = %d`, schedulesQuery, schedules[i].ShiftsOff)
+			count--
+			if count > 0 {
+				schedulesQuery = fmt.Sprintf(`%s and `, schedulesQuery)
+			}
+		}
+		if schedules[i].VolunteersPerShift > 0 {
+			schedulesQuery = fmt.Sprintf(`%sVolunteersPerShift = %d`, schedulesQuery, schedules[i].VolunteersPerShift)
+			count--
+			if count > 0 {
+				schedulesQuery = fmt.Sprintf(`%s and `, schedulesQuery)
+			}
+		}
+		if len(schedules[i].User) > 0 {
+			schedulesQuery = fmt.Sprintf(`%sUser = "%s"`, schedulesQuery, schedules[i].User)
+			count--
+			if count > 0 {
+				schedulesQuery = fmt.Sprintf(`%s and `, schedulesQuery)
+			}
+		}
+		if schedules[i].StartDate > 0 {
+			schedulesQuery = fmt.Sprintf(`%sStartDate = %d`, schedulesQuery, schedules[i].StartDate)
+			count--
+			if count > 0 {
+				schedulesQuery = fmt.Sprintf(`%s and `, schedulesQuery)
+			}
+		}
+		if schedules[i].EndDate > 0 {
+			count--
+			if count > 0 {
+				schedulesQuery = fmt.Sprintf(`%s and `, schedulesQuery)
+			}
+		}
+		schedulesQuery = fmt.Sprintf(`%s)`, schedulesQuery)
+		if i+1 < len(schedules) {
+			schedulesQuery = fmt.Sprintf(`%s or `, schedulesQuery)
+		}
+		//fmt.Println(count)
+		//fmt.Println(schedulesQuery)
+	}
+	if len(schedules) > 0 {
+		schedulesQuery = fmt.Sprintf(`%s)`, schedulesQuery)
+	}
+	//fmt.Println(schedulesQuery)
+	var result []schedule
+	rows, err := sm.DB.Query(schedulesQuery)
+	if err != nil {
+		log.Fatalf("Error in Request Schedules query: %v\n%s", err, schedulesQuery)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userSchedule schedule
+		err = rows.Scan(&userSchedule.ScheduleID, &userSchedule.ScheduleName, &userSchedule.ShiftsOff, &userSchedule.VolunteersPerShift, &userSchedule.User, &userSchedule.StartDate, &userSchedule.EndDate)
+		if err != nil {
+			log.Fatalf("Error in Request Schedules loop: %v", err)
+		}
+		result = append(result, userSchedule)
+	}
+	err = rows.Err()
+	if err != nil {
+		log.Fatalf("Error in Request Schedules rows.Err(): %v", err)
+	}
+	return result
+}
+
+func (sm SampleModel) UpdateSchedule(currentUser string, existingSchedules []schedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) DeleteSchedule(currentUser string, existingSchedules []schedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) CreateWFS(currentUser string, toCreate []weekdayForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fillWFSTableString := `insert into WeekdaysForSchedule (User, Weekday, Schedule) values (?, ?, ?)`
+	fillWFSTableStmt, err := tx.Prepare(fillWFSTableString)
+	if err != nil {
+		log.Fatalf("Error in Create WFS statement: %v\n%s", err, fillWFSTableString)
+	}
+	defer fillWFSTableStmt.Close()
+	for i := 0; i < len(toCreate); i++ {
+		_, err = fillWFSTableStmt.Exec(toCreate[i].User, toCreate[i].Weekday, toCreate[i].Schedule)
+		if err != nil {
+			log.Fatalf("Error in Create WFS loop: %v", err)
+		}
+	}
+	err = tx.Commit()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func (sm SampleModel) RequestWFS(currentUser string, weekdaysForSchedule []weekdayForSchedule) []weekdayForSchedule {
+	weekdaysForScheduleQuery := fmt.Sprintf(`select * from WeekdaysForSchedule where User = "%s"`, currentUser)
+	if len(weekdaysForSchedule) > 0 {
+		if testEmpty(weekdaysForSchedule, weekdayForSchedule{}) {
+			log.Fatal("RequestWFS failed because one of the values in weekdaysForSchedule had an empty/default values weekdayForSchedule struct")
+		}
+		weekdaysForScheduleQuery = fmt.Sprintf(`%s and (`, weekdaysForScheduleQuery)
+	}
+	for i := 0; i < len(weekdaysForSchedule); i++ {
+		count := countGTZero([]int{weekdaysForSchedule[i].WFSID, len(weekdaysForSchedule[i].User), weekdaysForSchedule[i].Schedule, len(weekdaysForSchedule[i].Weekday)})
+		// count must be at least 1 because the testEmpty check passed
+		fmt.Println(count)
+		weekdaysForScheduleQuery = fmt.Sprintf(`%s(`, weekdaysForScheduleQuery)
+		if weekdaysForSchedule[i].WFSID > 0 {
+			weekdaysForScheduleQuery = fmt.Sprintf(`%sWFSID = %d`, weekdaysForScheduleQuery, weekdaysForSchedule[i].WFSID)
+			count--
+			if count > 0 {
+				weekdaysForScheduleQuery = fmt.Sprintf(`%s and `, weekdaysForScheduleQuery)
+			}
+		}
+		if len(weekdaysForSchedule[i].User) > 0 {
+			weekdaysForScheduleQuery = fmt.Sprintf(`%sUser = "%s"`, weekdaysForScheduleQuery, weekdaysForSchedule[i].User)
+			count--
+			if count > 0 {
+				weekdaysForScheduleQuery = fmt.Sprintf(`%s and `, weekdaysForScheduleQuery)
+			}
+		}
+		if weekdaysForSchedule[i].Schedule > 0 {
+			weekdaysForScheduleQuery = fmt.Sprintf(`%sSchedule = %d`, weekdaysForScheduleQuery, weekdaysForSchedule[i].Schedule)
+			count--
+			if count > 0 {
+				weekdaysForScheduleQuery = fmt.Sprintf(`%s and `, weekdaysForScheduleQuery)
+			}
+		}
+		if len(weekdaysForSchedule[i].Weekday) > 0 {
+			weekdaysForScheduleQuery = fmt.Sprintf(`%sWeekday = "%s"`, weekdaysForScheduleQuery, weekdaysForSchedule[i].Weekday)
+		}
+		weekdaysForScheduleQuery = fmt.Sprintf(`%s)`, weekdaysForScheduleQuery)
+		if i+1 < len(weekdaysForSchedule) {
+			weekdaysForScheduleQuery = fmt.Sprintf(`%s or `, weekdaysForScheduleQuery)
+		}
+		fmt.Println(count)
+		fmt.Println(weekdaysForScheduleQuery)
+	}
+	if len(weekdaysForSchedule) > 0 {
+		weekdaysForScheduleQuery = fmt.Sprintf(`%s)`, weekdaysForScheduleQuery)
+	}
+	fmt.Println(weekdaysForScheduleQuery)
+	var result []weekdayForSchedule
+	rows, err := sm.DB.Query(weekdaysForScheduleQuery)
+	if err != nil {
+		log.Fatalf("Error in Request WFS query: %v\n%s", err, weekdaysForScheduleQuery)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var weekdayForScheduleStruct weekdayForSchedule
+		err = rows.Scan(&weekdayForScheduleStruct.WFSID, &weekdayForScheduleStruct.User, &weekdayForScheduleStruct.Weekday, &weekdayForScheduleStruct.Schedule)
+		if err != nil {
+			log.Fatalf("Error in Request WFS loop: %v", err)
+		}
+		result = append(result, weekdayForScheduleStruct)
+	}
+	err = rows.Err()
+	if err != nil {
+		log.Fatalf("Error in Request WFS rows.Err(): %v", err)
+	}
+	return result
+}
+
+func (sm SampleModel) UpdateWFS(currentUser string, existingWeekdaysForSchedule []weekdayForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) DeleteWFS(currentUser string, existingWeekdaysForSchedule []weekdayForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) CleanOrphanedWFS(currentUser string, currentSchedule string, currentWeekdays []string) { // Figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in. If it's not in currentWeekdays but has the same UserName and ScheduleName, delete it. I shouldn't need to put any sql in here. I should use the CRUD functions.
 }
 
 func (sm SampleModel) CreateVFS(currentUser string, toCreate []volunteerForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
@@ -533,43 +754,43 @@ func (sm SampleModel) RequestVFS(currentUser string, volunteersForSchedule []vol
 		VFSQuery = fmt.Sprintf(`%s and (`, VFSQuery)
 	}
 	for i := 0; i < len(volunteersForSchedule); i++ {
-		count := countGTZero([]int{volunteersForSchedule[i].VFSID, len(volunteersForSchedule[i].User), volunteersForSchedule[i].Schedule, volunteersForSchedule[i].Volunteer}) > 1
-		if count {
-			VFSQuery = fmt.Sprintf(`%s(`, VFSQuery)
-		}
+		count := countGTZero([]int{volunteersForSchedule[i].VFSID, len(volunteersForSchedule[i].User), volunteersForSchedule[i].Schedule, volunteersForSchedule[i].Volunteer})
+		VFSQuery = fmt.Sprintf(`%s(`, VFSQuery)
 		if volunteersForSchedule[i].VFSID > 0 {
 			VFSQuery = fmt.Sprintf(`%sVFSID = %d`, VFSQuery, volunteersForSchedule[i].VFSID)
-			if count {
+			count--
+			if count > 0 {
 				VFSQuery = fmt.Sprintf(`%s and `, VFSQuery)
 			}
 		}
 		if len(volunteersForSchedule[i].User) > 0 {
 			VFSQuery = fmt.Sprintf(`%sUser = "%s"`, VFSQuery, volunteersForSchedule[i].User)
-			if count {
+			count--
+			if count > 0 {
 				VFSQuery = fmt.Sprintf(`%s and `, VFSQuery)
 			}
 		}
 		if volunteersForSchedule[i].Schedule > 0 {
 			VFSQuery = fmt.Sprintf(`%sSchedule = %d`, VFSQuery, volunteersForSchedule[i].Schedule)
-			if count {
+			count--
+			if count > 0 {
 				VFSQuery = fmt.Sprintf(`%s and `, VFSQuery)
 			}
 		}
 		if volunteersForSchedule[i].Volunteer > 0 {
 			VFSQuery = fmt.Sprintf(`%sVolunteer = %d`, VFSQuery, volunteersForSchedule[i].Volunteer)
 		}
-		if count {
-			VFSQuery = fmt.Sprintf(`%s)`, VFSQuery)
-		}
+		VFSQuery = fmt.Sprintf(`%s)`, VFSQuery)
 		if i+1 < len(volunteersForSchedule) {
 			VFSQuery = fmt.Sprintf(`%s or `, VFSQuery)
 		}
+		//fmt.Println(count)
 		//fmt.Println(VFSQuery)
 	}
 	if len(volunteersForSchedule) > 0 {
 		VFSQuery = fmt.Sprintf(`%s)`, VFSQuery)
 	}
-	fmt.Println(VFSQuery)
+	//fmt.Println(VFSQuery)
 	var result []volunteerForSchedule
 	rows, err := sm.DB.Query(VFSQuery)
 	if err != nil {
@@ -588,8 +809,19 @@ func (sm SampleModel) RequestVFS(currentUser string, volunteersForSchedule []vol
 	if err != nil {
 		log.Fatalf("Error in Request VFS rows.Err(): %v", err)
 	}
-	// Sanity check unlikely to help much. If two volunteerForSchedule entries are provided and they return the same VFSID, then the sanity check would falsely fail.
 	return result
+}
+
+func (sm SampleModel) UpdateVFS(currentUser string, existingVolunteersForSchedule []volunteerForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) DeleteVFS(currentUser string, existingVolunteersForSchedule []volunteerForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) CleanOrphanedVFS(currentUser string, currentSchedule string, currentVolunteers []string) { // Figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in. If it's not in currentVolunteers but has the same UserName and ScheduleName, delete it. I shouldn't need to put any sql in here. I should use the CRUD functions.
 }
 
 func (sm SampleModel) CreateUFS(currentUser string, toCreate []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
@@ -624,43 +856,45 @@ func (sm SampleModel) RequestUFS(currentUser string, unavailabilitiesForSchedule
 		UFSQuery = fmt.Sprintf(`%s and (`, UFSQuery)
 	}
 	for i := 0; i < len(unavailabilitiesForSchedule); i++ {
-		count := countGTZero([]int{unavailabilitiesForSchedule[i].UFSID, len(unavailabilitiesForSchedule[i].User), unavailabilitiesForSchedule[i].VolunteerForSchedule, unavailabilitiesForSchedule[i].Date}) > 1
-		if count {
-			UFSQuery = fmt.Sprintf(`%s(`, UFSQuery)
-		}
+		count := countGTZero([]int{unavailabilitiesForSchedule[i].UFSID, len(unavailabilitiesForSchedule[i].User), unavailabilitiesForSchedule[i].VolunteerForSchedule, unavailabilitiesForSchedule[i].Date})
+		// count must be at least 1 because the testEmpty check passed
+		//fmt.Println(count)
+		UFSQuery = fmt.Sprintf(`%s(`, UFSQuery)
 		if unavailabilitiesForSchedule[i].UFSID > 0 {
 			UFSQuery = fmt.Sprintf(`%sUFSID = %d`, UFSQuery, unavailabilitiesForSchedule[i].UFSID)
-			if count {
+			count--
+			if count > 0 {
 				UFSQuery = fmt.Sprintf(`%s and `, UFSQuery)
 			}
 		}
 		if len(unavailabilitiesForSchedule[i].User) > 0 {
 			UFSQuery = fmt.Sprintf(`%sUser = "%s"`, UFSQuery, unavailabilitiesForSchedule[i].User)
-			if count {
+			count--
+			if count > 0 {
 				UFSQuery = fmt.Sprintf(`%s and `, UFSQuery)
 			}
 		}
 		if unavailabilitiesForSchedule[i].VolunteerForSchedule > 0 {
 			UFSQuery = fmt.Sprintf(`%sVolunteerForSchedule = %d`, UFSQuery, unavailabilitiesForSchedule[i].VolunteerForSchedule)
-			if count {
+			count--
+			if count > 0 {
 				UFSQuery = fmt.Sprintf(`%s and `, UFSQuery)
 			}
 		}
 		if unavailabilitiesForSchedule[i].Date > 0 {
 			UFSQuery = fmt.Sprintf(`%sDate = %d`, UFSQuery, unavailabilitiesForSchedule[i].Date)
 		}
-		if count {
-			UFSQuery = fmt.Sprintf(`%s)`, UFSQuery)
-		}
+		UFSQuery = fmt.Sprintf(`%s)`, UFSQuery)
 		if i+1 < len(unavailabilitiesForSchedule) {
 			UFSQuery = fmt.Sprintf(`%s or `, UFSQuery)
 		}
+		//fmt.Println(count)
 		//fmt.Println(UFSQuery)
 	}
 	if len(unavailabilitiesForSchedule) > 0 {
 		UFSQuery = fmt.Sprintf(`%s)`, UFSQuery)
 	}
-	fmt.Println(UFSQuery)
+	//fmt.Println(UFSQuery)
 	var result []unavailabilityForSchedule
 	rows, err := sm.DB.Query(UFSQuery)
 	if err != nil {
@@ -679,28 +913,27 @@ func (sm SampleModel) RequestUFS(currentUser string, unavailabilitiesForSchedule
 	if err != nil {
 		log.Fatalf("Error in Request UFS rows.Err(): %v", err)
 	}
-	// Sanity check impossible. There are an indeterminate number of possible return values independent of input
 	return result
 }
 
-func (sm SampleModel) DeleteSchedule(currentUser string, existingSchedule string) { // figure out what to return as a completed/failed value, instead of just crashing the program
+func (sm SampleModel) UpdateUFS(currentUser string, existingUnavailabilitiesForSchedule []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) DeleteUFS(currentUser string, existingUnavailabilitiesForSchedule []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in
+}
+
+func (sm SampleModel) CleanOrphanedUFS(currentUser string, currentSchedule string, currentVolunteer string, currentUnavailabilities []string) { // Need to delete all related UFS when deleting a VFS. If there is a volunteer with no VFS's, delete the volunteer (I think). Figure out what to return as a completed/failed value, instead of just crashing the program
+	// fill this in. Must be done per volunteer. If it's not in currentUnavailabilities but has the same UserName, ScheduleName, and VolunteerName, delete it. I shouldn't need to put any sql in here. I should use the CRUD functions.
+}
+
+func (sm SampleModel) CreateCompletedSchedule(currentUser string, toCreate completedSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
 	// fill this in
 }
 
 func (sm SampleModel) DeleteCompletedSchedule(currentUser string, existingSchedule string, toDelete string) { // how to identify what to delete? Figure out what to return as a completed/failed value, instead of just crashing the program
 	// fill this in
-}
-
-func (sm SampleModel) CleanOrphanedWFS(currentUser string, currentSchedule string, currentWeekdays []string) { // Figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in. If it's not in currentWeekdays but has the same UserName and ScheduleName, delete it.
-}
-
-func (sm SampleModel) CleanOrphanedVFS(currentUser string, currentSchedule string, currentVolunteers []string) { // Figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in. If it's not in currentVolunteers but has the same UserName and ScheduleName, delete it.
-}
-
-func (sm SampleModel) CleanOrphanedUFS(currentUser string, currentSchedule string, currentVolunteer string, currentUnavailabilities []string) { // Need to delete all related UFS when deleting a VFS. If there is a volunteer with no VFS's, delete the volunteer (I think). Figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in. Must be done per volunteer. If it's not in currentUnavailabilities but has the same UserName, ScheduleName, and VolunteerName, delete it.
 }
 
 /*
@@ -747,43 +980,49 @@ func main() {
 			ScheduleName:       "test1",
 			ShiftsOff:          3,
 			VolunteersPerShift: 3,
-			StartDate:          env.sample.RequestDate(env.loggedInUser, date{Month: 1, Day: 1, Year: 2024}).DateID,
-			EndDate:            env.sample.RequestDate(env.loggedInUser, date{Month: 3, Day: 1, Year: 2024}).DateID,
+			StartDate:          env.sample.RequestDates([]date{{Month: 1, Day: 1, Year: 2024}})[0].DateID,
+			EndDate:            env.sample.RequestDates([]date{{Month: 3, Day: 1, Year: 2024}})[0].DateID,
 			User:               env.loggedInUser,
 		},
 		{
 			ScheduleName:       "test2",
 			ShiftsOff:          3,
 			VolunteersPerShift: 3,
-			StartDate:          env.sample.RequestDate(env.loggedInUser, date{Month: 3, Day: 1, Year: 2024}).DateID,
-			EndDate:            env.sample.RequestDate(env.loggedInUser, date{Month: 6, Day: 1, Year: 2024}).DateID,
+			StartDate:          env.sample.RequestDates([]date{{Month: 3, Day: 1, Year: 2024}})[0].DateID,
+			EndDate:            env.sample.RequestDates([]date{{Month: 6, Day: 1, Year: 2024}})[0].DateID,
 			User:               env.loggedInUser,
 		},
 		{
 			ScheduleName:       "test3",
 			ShiftsOff:          3,
 			VolunteersPerShift: 3,
-			StartDate:          env.sample.RequestDate(env.loggedInUser, date{Month: 6, Day: 1, Year: 2024}).DateID,
-			EndDate:            env.sample.RequestDate(env.loggedInUser, date{Month: 9, Day: 1, Year: 2024}).DateID,
+			StartDate:          env.sample.RequestDates([]date{{Month: 6, Day: 1, Year: 2024}})[0].DateID,
+			EndDate:            env.sample.RequestDates([]date{{Month: 9, Day: 1, Year: 2024}})[0].DateID,
 			User:               env.loggedInUser,
 		},
 	}
 	env.sample.CreateSchedules(env.loggedInUser, schedules)
 	weekdaysForSchedule := []weekdayForSchedule{
 		{
-			User:     env.loggedInUser,
-			Weekday:  "Sunday",
-			Schedule: env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+			User:    env.loggedInUser,
+			Weekday: "Sunday",
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test1"},
+			})[0].ScheduleID,
 		},
 		{
-			User:     env.loggedInUser,
-			Weekday:  "Wednesday",
-			Schedule: env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+			User:    env.loggedInUser,
+			Weekday: "Wednesday",
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test2"},
+			})[0].ScheduleID,
 		},
 		{
-			User:     env.loggedInUser,
-			Weekday:  "Friday",
-			Schedule: env.sample.RequestSchedules(env.loggedInUser, []string{"test3"})[0].ScheduleID,
+			User:    env.loggedInUser,
+			Weekday: "Friday",
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test3"},
+			})[0].ScheduleID,
 		},
 	}
 	env.sample.CreateWFS(env.loggedInUser, weekdaysForSchedule)
@@ -820,58 +1059,80 @@ func main() {
 	env.sample.CreateVolunteers(env.loggedInUser, volunteers)
 	volunteersForSchedule := []volunteerForSchedule{
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test1"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Tim"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test1"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Bill"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test1"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Jack"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test1"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "George"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test2"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Bob"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test2"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Lance"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test2"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Larry"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test2"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Tim"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test3"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test3"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Bill"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test3"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test3"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Jack"}})[0].VolunteerID,
 		},
 		{
-			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test3"})[0].ScheduleID,
+			User: env.loggedInUser,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test3"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "George"}})[0].VolunteerID,
 		},
 	}
@@ -881,75 +1142,122 @@ func main() {
 			User: env.loggedInUser,
 			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 				{
-					Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+					Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+						{ScheduleName: "test1"},
+					})[0].ScheduleID,
 					Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Tim"}})[0].VolunteerID,
 				},
 			})[0].VFSID,
-			Date: env.sample.RequestDate(env.loggedInUser, date{Month: 1, Day: 14, Year: 2024}).DateID,
+			Date: env.sample.RequestDates([]date{{Month: 1, Day: 14, Year: 2024}})[0].DateID,
 		},
 		{
 			User: env.loggedInUser,
 			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 				{
-					Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+					Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+						{ScheduleName: "test1"},
+					})[0].ScheduleID,
 					Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Bill"}})[0].VolunteerID,
 				},
 			})[0].VFSID,
-			Date: env.sample.RequestDate(env.loggedInUser, date{Month: 1, Day: 21, Year: 2024}).DateID,
+			Date: env.sample.RequestDates([]date{{Month: 1, Day: 21, Year: 2024}})[0].DateID,
 		},
 		{
 			User: env.loggedInUser,
 			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 				{
-					Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+					Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+						{ScheduleName: "test2"},
+					})[0].ScheduleID,
 					Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Bob"}})[0].VolunteerID,
 				},
 			})[0].VFSID,
-			Date: env.sample.RequestDate(env.loggedInUser, date{Month: 5, Day: 12, Year: 2024}).DateID,
+			Date: env.sample.RequestDates([]date{{Month: 5, Day: 12, Year: 2024}})[0].DateID,
 		},
 		{
 			User: env.loggedInUser,
 			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 				{
-					Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+					Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+						{ScheduleName: "test2"},
+					})[0].ScheduleID,
 					Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Lance"}})[0].VolunteerID,
 				},
 			})[0].VFSID,
-			Date: env.sample.RequestDate(env.loggedInUser, date{Month: 5, Day: 19, Year: 2024}).DateID,
+			Date: env.sample.RequestDates([]date{{Month: 5, Day: 19, Year: 2024}})[0].DateID,
 		},
 		{
 			User: env.loggedInUser,
 			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 				{
-					Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test3"})[0].ScheduleID,
+					Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+						{ScheduleName: "test3"},
+					})[0].ScheduleID,
 					Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Jack"}})[0].VolunteerID,
 				},
 			})[0].VFSID,
-			Date: env.sample.RequestDate(env.loggedInUser, date{Month: 8, Day: 11, Year: 2024}).DateID,
+			Date: env.sample.RequestDates([]date{{Month: 8, Day: 11, Year: 2024}})[0].DateID,
 		},
 		{
 			User: env.loggedInUser,
 			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 				{
-					Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test3"})[0].ScheduleID,
+					Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+						{ScheduleName: "test3"},
+					})[0].ScheduleID,
 					Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "George"}})[0].VolunteerID,
 				},
 			})[0].VFSID,
-			Date: env.sample.RequestDate(env.loggedInUser, date{Month: 8, Day: 18, Year: 2024}).DateID,
+			Date: env.sample.RequestDates([]date{{Month: 8, Day: 18, Year: 2024}})[0].DateID,
 		},
 	}
 	env.sample.CreateUFS(env.loggedInUser, unavailabilitiesForSchedule)
+	fmt.Println(env.sample.RequestWFS(env.loggedInUser, []weekdayForSchedule{
+		{
+			Weekday: env.sample.RequestDates([]date{
+				{
+					Month: 8,
+					Day:   18,
+					Year:  2024,
+				},
+			})[0].Weekday,
+		},
+		{
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test2"},
+			})[0].ScheduleID,
+		},
+		{
+			Weekday: env.sample.RequestDates([]date{
+				{Weekday: "Friday"},
+			})[0].Weekday,
+		},
+	}))
+	fmt.Println(env.sample.RequestSchedules(env.loggedInUser, []schedule{
+		{ScheduleName: "test1",
+			ShiftsOff: 3},
+		{StartDate: env.sample.RequestDates([]date{{Month: 1, Day: 1, Year: 2024}})[0].DateID,
+			ShiftsOff: 3,
+		},
+	}))
+	fmt.Println(env.sample.RequestSchedulesExtended(env.loggedInUser, []schedule{{ShiftsOff: 0}}, true))
+	fmt.Println(env.sample.RequestSchedules(env.loggedInUser, []schedule{}))
 	fmt.Println(env.sample.RequestVolunteers(env.loggedInUser, []volunteer{
-		{VolunteerName: "Bob"},
+		{VolunteerID: 1, VolunteerName: "Tim"},
 		{VolunteerName: "George"},
 	}))
+	fmt.Println(env.sample.RequestVolunteers(env.loggedInUser, []volunteer{}))
 	fmt.Println(env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 		{
-			Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test1"},
+			})[0].ScheduleID,
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Tim"}})[0].VolunteerID,
 		},
 		{
-			Schedule: env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+			Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+				{ScheduleName: "test2"},
+			})[0].ScheduleID,
 		},
 		{
 			Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "George"}})[0].VolunteerID,
@@ -959,11 +1267,13 @@ func main() {
 		{
 			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 				{
-					Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test1"})[0].ScheduleID,
+					Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+						{ScheduleName: "test1"},
+					})[0].ScheduleID,
 					Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Tim"}})[0].VolunteerID,
 				},
 			})[0].VFSID,
-			Date: env.sample.RequestDate(env.loggedInUser, date{Month: 1, Day: 14, Year: 2024}).DateID,
+			Date: env.sample.RequestDates([]date{{Month: 1, Day: 14, Year: 2024}})[0].DateID,
 		},
 		{
 			UFSID: 2,
@@ -971,15 +1281,18 @@ func main() {
 		{
 			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 				{
-					Schedule:  env.sample.RequestSchedules(env.loggedInUser, []string{"test2"})[0].ScheduleID,
+					Schedule: env.sample.RequestSchedules(env.loggedInUser, []schedule{
+						{ScheduleName: "test2"},
+					})[0].ScheduleID,
 					Volunteer: env.sample.RequestVolunteers(env.loggedInUser, []volunteer{{VolunteerName: "Bob"}})[0].VolunteerID,
 				},
 			})[0].VFSID,
 		},
 		{
-			Date: env.sample.RequestDate(env.loggedInUser, date{Month: 8, Day: 18, Year: 2024}).DateID,
+			Date: env.sample.RequestDates([]date{{Month: 8, Day: 18, Year: 2024}})[0].DateID,
 		},
 	}))
+	fmt.Println(env.sample.RequestUFS(env.loggedInUser, []unavailabilityForSchedule{}))
 	fmt.Println("Done. Press enter to exit executable.")
 	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 	fmt.Print(weekday{}, month{}, user{})
