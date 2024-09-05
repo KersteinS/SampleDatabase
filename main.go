@@ -157,6 +157,7 @@ func countGTZero(intSlice []int) int {
 	return count
 }
 
+// If I return val from the loop, the error message could hint at that issue better.
 func testEmpty[T comparable](sliceOfT []T, emptyT T) bool {
 	for _, val := range sliceOfT {
 		if val == emptyT {
@@ -306,6 +307,33 @@ func (sm SampleModel) RecieveAndStoreData(data SendReceiveDataStruct) { // shoul
 	// fill this in
 }
 
+// This function exists to validate WeekdayName spelling and provide WeekdayID if needed. There is no request Weekdays
+func (sm SampleModel) RequestWeekday(weekdayStruct weekday) weekday {
+	var weekdays []weekday
+	weekdayQuery := fmt.Sprintf(`select * from Weekdays where WeekdayID=%d or WeekdayName="%s"`, weekdayStruct.WeekdayID, weekdayStruct.WeekdayName)
+	rows, err := sm.DB.Query(weekdayQuery)
+	if err != nil {
+		log.Fatalf("Error in Request Weekday query: %v\n%s", err, weekdayQuery)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var weekdayStruct weekday
+		err = rows.Scan(&weekdayStruct.WeekdayID, &weekdayStruct.WeekdayName)
+		if err != nil {
+			log.Fatalf("Error in Request Weekday loop: %v", err)
+		}
+		weekdays = append(weekdays, weekdayStruct)
+	}
+	err = rows.Err()
+	if err != nil {
+		log.Fatalf("Error in Request Weekday rows.Err(): %v", err)
+	}
+	if len(weekdays) != 1 {
+		log.Fatalf("Failed to locate exactly one weekday matching %+v.\nFound %d matches.", weekdayStruct, len(weekdays))
+	}
+	return weekdays[0]
+}
+
 func (sm SampleModel) RequestDate(dateStruct date) date {
 	dates := sm.RequestDates([]date{dateStruct})
 	if len(dates) != 1 {
@@ -393,6 +421,10 @@ func (sm SampleModel) RequestDates(dates []date) []date {
 }
 
 func (sm SampleModel) CreateVolunteers(currentUser string, toCreate []volunteer) {
+	check := sm.RequestVolunteers(currentUser, toCreate)
+	if len(check) > 0 {
+		log.Fatalf("Create Volunteers failed because at least one of the volunteers to be created already exists in the database.\nExisting volunteer(s): %+v", check)
+	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
 		log.Fatal(err)
@@ -548,6 +580,10 @@ func (sm SampleModel) CleanOrphanedVolunteers(currentUser string) { // figure ou
 }
 
 func (sm SampleModel) CreateSchedules(currentUser string, toCreate []schedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	check := sm.RequestSchedulesExtended(currentUser, toCreate, true)
+	if len(check) > 0 {
+		log.Fatalf("Create Schedules failed because at least one of the schedules to be created already exists in the database.\nExisting schedule(s): %+v", check)
+	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
 		log.Fatal(err)
@@ -652,10 +688,7 @@ func (sm SampleModel) RequestSchedulesExtended(currentUser string, schedules []s
 			}
 		}
 		if schedules[i].EndDate > 0 {
-			count--
-			if count > 0 {
-				schedulesQuery = fmt.Sprintf(`%s and `, schedulesQuery)
-			}
+			schedulesQuery = fmt.Sprintf(`%sEndDate = %d`, schedulesQuery, schedules[i].EndDate)
 		}
 		schedulesQuery = fmt.Sprintf(`%s)`, schedulesQuery)
 		if i+1 < len(schedules) {
@@ -694,7 +727,7 @@ func (sm SampleModel) UpdateSchedules(currentUser string, toUpdate []schedule) {
 	sm.UpdateSchedulesExtended(currentUser, toUpdate, false)
 }
 
-// This version of UpdateSchedules allows ShiftsOff = 0 to be queried, but any default schedule structs will have ShiftsOff: 0 implicitly, so ShiftsOff must be set to a desired value or to -1 to be ignored.
+// This version of UpdateSchedulesExtended allows ShiftsOff = 0 to be queried, but any default schedule structs will have ShiftsOff: 0 implicitly, so ShiftsOff must be set to a desired value or to -1 to be ignored.
 func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []schedule, includeShiftsOff0 bool) { // figure out what to return as a completed/failed value, instead of just crashing the program
 	var checkAgainst schedule
 	if includeShiftsOff0 {
@@ -812,6 +845,10 @@ func (sm SampleModel) DeleteSchedules(currentUser string, toDelete []schedule) {
 }
 
 func (sm SampleModel) CreateWFS(currentUser string, toCreate []weekdayForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	check := sm.RequestWFS(currentUser, toCreate)
+	if len(check) > 0 {
+		log.Fatalf("Create WFS failed because at least one of the weekdayForSchedule entries to be created already exists in the database.\nExisting weekdayForSchedule entry(s): %+v", check)
+	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
 		log.Fatal(err)
@@ -832,6 +869,14 @@ func (sm SampleModel) CreateWFS(currentUser string, toCreate []weekdayForSchedul
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (sm SampleModel) RequestWFSSingle(currentUser string, volunteerForScheduleStruct weekdayForSchedule) weekdayForSchedule {
+	weekdaysForSchedule := sm.RequestWFS(currentUser, []weekdayForSchedule{volunteerForScheduleStruct})
+	if len(weekdaysForSchedule) != 1 {
+		log.Fatalf("Failed to locate exactly one WFS matching %+v.\nFound %d matches.", volunteerForScheduleStruct, len(weekdaysForSchedule))
+	}
+	return weekdaysForSchedule[0]
 }
 
 func (sm SampleModel) RequestWFS(currentUser string, weekdaysForSchedule []weekdayForSchedule) []weekdayForSchedule {
@@ -991,6 +1036,9 @@ func (sm SampleModel) CleanOrphanedWFS(currentUser string, correctWFS []map[sche
 			}
 			var weekdays []string
 			for _, dateStruct := range value {
+				if len(dateStruct.Weekday) < 6 { // smallest weekday name is 6 characters long.
+					log.Fatal("Clean Orphaned WFS failed because one of the provided date structs did not have a Weekday")
+				}
 				weekdays = append(weekdays, dateStruct.Weekday)
 			}
 			check := sm.RequestWFS(currentUser, []weekdayForSchedule{{Schedule: key.ScheduleID}})
@@ -1016,6 +1064,10 @@ func (sm SampleModel) CleanOrphanedWFS(currentUser string, correctWFS []map[sche
 }
 
 func (sm SampleModel) CreateVFS(currentUser string, toCreate []volunteerForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	check := sm.RequestVFS(currentUser, toCreate)
+	if len(check) > 0 {
+		log.Fatalf("Create VFS failed because at least one of the volunteerForSchedule entries to be created already exists in the database.\nExisting volunteerForSchedule entry(s): %+v", check)
+	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
 		log.Fatal(err)
@@ -1036,6 +1088,14 @@ func (sm SampleModel) CreateVFS(currentUser string, toCreate []volunteerForSched
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (sm SampleModel) RequestVFSSingle(currentUser string, volunteerForScheduleStruct volunteerForSchedule) volunteerForSchedule {
+	volunteersForSchedule := sm.RequestVFS(currentUser, []volunteerForSchedule{volunteerForScheduleStruct})
+	if len(volunteersForSchedule) != 1 {
+		log.Fatalf("Failed to locate exactly one VFS matching %+v.\nFound %d matches.", volunteerForScheduleStruct, len(volunteersForSchedule))
+	}
+	return volunteersForSchedule[0]
 }
 
 func (sm SampleModel) RequestVFS(currentUser string, volunteersForSchedule []volunteerForSchedule) []volunteerForSchedule {
@@ -1123,7 +1183,7 @@ func (sm SampleModel) UpdateVFS(currentUser string, toUpdate []volunteerForSched
 		count := countGTZero([]int{val.VFSID, len(val.User), val.Schedule, val.Volunteer})
 		count-- // This is needed because a VFSID has been provided (verified at the start of this loop).
 		if count == 0 {
-			log.Fatal("Update VolunteersForSchedule failed because only one value was provided in a weekdayForSchedule struct. At least two values (a VFSID and a value to update) must be provided")
+			log.Fatal("Update VolunteersForSchedule failed because only one value was provided in a volunteerForSchedule struct. At least two values (a VFSID and a value to update) must be provided")
 		}
 		// count is at least 1
 		//fmt.Println(count)
@@ -1183,11 +1243,48 @@ func (sm SampleModel) DeleteVFS(currentUser string, toDelete []volunteerForSched
 	}
 }
 
-func (sm SampleModel) CleanOrphanedVFS(currentUser string, currentSchedule string, currentVolunteers []string) { // Figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in. If it's not in currentVolunteers but has the same UserName and ScheduleName, delete it. I shouldn't need to put any sql in here. I should use the CRUD functions.
+func (sm SampleModel) CleanOrphanedVFS(currentUser string, correctVFS []map[schedule][]volunteer) { // Figure out what to return as a completed/failed value, instead of just crashing the program
+	// correctVFS is a slices of maps with schedule structs as keys and slices of volunteers containing VolunteerNames as values. If a WFS row is linked to a schedule, but doesn't have a matching weekday, delete that WFS row.
+	var VFSToDelete []string
+	for _, scheduleVolunteersPair := range correctVFS {
+		for key, value := range scheduleVolunteersPair {
+			if key.ScheduleID == 0 {
+				log.Fatal("Clean Orphaned VFS failed because one of the provided schedule structs did not have a ScheduleID")
+			}
+			var volunteers []string
+			for _, volunteerStruct := range value {
+				if len(volunteerStruct.VolunteerName) < 1 {
+					log.Fatal("Clean Orphaned VFS failed because one of the provided volunteer structs did not have a VolunteerName")
+				}
+				volunteers = append(volunteers, volunteerStruct.VolunteerName)
+			}
+			check := sm.RequestVFS(currentUser, []volunteerForSchedule{{Schedule: key.ScheduleID}})
+			for _, vfs := range check {
+				if !slices.Contains(volunteers, sm.RequestVolunteer(currentUser, volunteer{VolunteerID: vfs.Volunteer}).VolunteerName) {
+					VFSToDelete = append(VFSToDelete, strconv.Itoa(vfs.VFSID))
+					//fmt.Println(VFSToDelete)
+				}
+			}
+		}
+		tx, err := sm.DB.Begin()
+		if err != nil {
+			log.Fatalf("Error in Clean Orphaned VFS begin tx: %v", err)
+		}
+		deleteVFSQuery := fmt.Sprintf(`delete from VolunteersForSchedule where User = "%s" and VFSID in (%s)`, currentUser, CsvSlice(VFSToDelete, true))
+		//fmt.Println(deleteVFSQuery)
+		execInTx(tx, deleteVFSQuery)
+		err = tx.Commit()
+		if err != nil {
+			log.Fatalf("Error in Clean Orphaned VFS tx commit: %v", err)
+		}
+	}
 }
 
 func (sm SampleModel) CreateUFS(currentUser string, toCreate []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	check := sm.RequestUFS(currentUser, toCreate)
+	if len(check) > 0 {
+		log.Fatalf("Create UFS failed because at least one of the unavailabilityForSchedule entries to be created already exists in the database.\nExisting unavailabilityForSchedule entry(s): %+v", check)
+	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
 		log.Fatal(err)
@@ -1208,6 +1305,14 @@ func (sm SampleModel) CreateUFS(currentUser string, toCreate []unavailabilityFor
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (sm SampleModel) RequestUFSSingle(currentUser string, unavailabilityForScheduleStruct unavailabilityForSchedule) unavailabilityForSchedule {
+	unavailabilitiesForSchedule := sm.RequestUFS(currentUser, []unavailabilityForSchedule{unavailabilityForScheduleStruct})
+	if len(unavailabilitiesForSchedule) != 1 {
+		log.Fatalf("Failed to locate exactly one UFS matching %+v.\nFound %d matches.", unavailabilityForScheduleStruct, len(unavailabilitiesForSchedule))
+	}
+	return unavailabilitiesForSchedule[0]
 }
 
 func (sm SampleModel) RequestUFS(currentUser string, unavailabilitiesForSchedule []unavailabilityForSchedule) []unavailabilityForSchedule {
@@ -1279,8 +1384,60 @@ func (sm SampleModel) RequestUFS(currentUser string, unavailabilitiesForSchedule
 	return result
 }
 
-func (sm SampleModel) UpdateUFS(currentUser string, existingUnavailabilitiesForSchedule []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in
+func (sm SampleModel) UpdateUFS(currentUser string, toUpdate []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	if testEmpty(toUpdate, unavailabilityForSchedule{}) {
+		log.Fatal("Update UnavailabilitiesForSchedule failed because one of the values in toUpdate had an empty/default values unavailabilityForSchedule struct")
+	}
+	head := `update UnavailabilitiesForSchedule set`
+	tail := fmt.Sprintf(`where User="%s" and UFSID=?`, currentUser)
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		log.Fatalf("Error in Update UnavailabilitiesForSchedule begin tx: %v", err)
+	}
+	for _, val := range toUpdate {
+		if val.UFSID == 0 {
+			log.Fatal("Update UnavailabilitiesForSchedule failed because one of the values in toUpdate had an empty/default value for UFSID")
+		}
+		updateUFSString := head
+		count := countGTZero([]int{val.UFSID, len(val.User), val.VolunteerForSchedule, val.Date})
+		count-- // This is needed because a UFSID has been provided (verified at the start of this loop).
+		if count == 0 {
+			log.Fatal("Update UnavailabilitiesForSchedule failed because only one value was provided in an unavailabilityForSchedule struct. At least two values (a UFSID and a value to update) must be provided")
+		}
+		// count is at least 1
+		fmt.Println(count)
+		fmt.Println(updateUFSString)
+		if val.VolunteerForSchedule > 0 {
+			updateUFSString = fmt.Sprintf(`%s VolunteerForSchedule=%d`, updateUFSString, val.VolunteerForSchedule)
+			count--
+			if count > 0 {
+				updateUFSString = fmt.Sprintf(`%s,`, updateUFSString)
+			}
+			fmt.Println(count)
+			fmt.Println(updateUFSString)
+		}
+		if val.Date > 0 {
+			updateUFSString = fmt.Sprintf(`%s Date=%d`, updateUFSString, val.Date)
+			fmt.Println(count)
+			fmt.Println(updateUFSString)
+		}
+		updateUFSString = fmt.Sprintf(`%s %s`, updateUFSString, tail)
+		fmt.Println(count)
+		fmt.Println(updateUFSString)
+		updateSchedulesStmt, err := tx.Prepare(updateUFSString)
+		if err != nil {
+			log.Fatalf("Error in Update UnavailabilitiesForSchedule stmt prepare: %v", err)
+		}
+		defer updateSchedulesStmt.Close()
+		_, err = updateSchedulesStmt.Exec(val.UFSID)
+		if err != nil {
+			log.Fatalf("Error in Update UnavailabilitiesForSchedule stmt exec: %v", err)
+		}
+	}
+	err = tx.Commit()
+	if err != nil {
+		log.Fatalf("Error in Update UnavailabilitiesForSchedule tx commit: %v", err)
+	}
 }
 
 func (sm SampleModel) DeleteUFS(currentUser string, existingUnavailabilitiesForSchedule []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
@@ -1317,8 +1474,6 @@ What data will be sent by the app?
 What Delete options are needed?
 	Delete Schedule should delete a single row on Schedules and multiple rows on WFS, VFS, UFS, and CompletedSchedules
 	Delete Completed Schedule should delete a single row on CompletedSchedules
-
-Before adding new rows, I need to check that there's not identical data on a different row (for tables: Volunteers, Schedules, WFS, VFS, UFS)
 
 This does not contemplate CRUDing users yet.
 */
@@ -1370,17 +1525,17 @@ func main() {
 	weekdaysForSchedule := []weekdayForSchedule{
 		{
 			User:     env.loggedInUser,
-			Weekday:  "Sunday",
+			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}).WeekdayName,
 			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
 		},
 		{
 			User:     env.loggedInUser,
-			Weekday:  "Wednesday",
+			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Wednesday"}).WeekdayName,
 			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
 		},
 		{
 			User:     env.loggedInUser,
-			Weekday:  "Friday",
+			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Friday"}).WeekdayName,
 			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
 		},
 	}
@@ -1477,67 +1632,55 @@ func main() {
 	unavailabilitiesForSchedule := []unavailabilityForSchedule{
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
-				{
-					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
-				},
-			})[0].VFSID,
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
+				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
+			}).VFSID,
 			Date: env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024}).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
-				{
-					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"}).VolunteerID,
-				},
-			})[0].VFSID,
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
+				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"}).VolunteerID,
+			}).VFSID,
 			Date: env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024}).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
-				{
-					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}).VolunteerID,
-				},
-			})[0].VFSID,
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
+				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}).VolunteerID,
+			}).VFSID,
 			Date: env.sample.RequestDate(date{Month: 5, Day: 12, Year: 2024}).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
-				{
-					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"}).VolunteerID,
-				},
-			})[0].VFSID,
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
+				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"}).VolunteerID,
+			}).VFSID,
 			Date: env.sample.RequestDate(date{Month: 5, Day: 19, Year: 2024}).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
-				{
-					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"}).VolunteerID,
-				},
-			})[0].VFSID,
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
+				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"}).VolunteerID,
+			}).VFSID,
 			Date: env.sample.RequestDate(date{Month: 8, Day: 11, Year: 2024}).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
-				{
-					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"}).VolunteerID,
-				},
-			})[0].VFSID,
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
+				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"}).VolunteerID,
+			}).VFSID,
 			Date: env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024}).DateID,
 		},
 	}
 	env.sample.CreateUFS(env.loggedInUser, unavailabilitiesForSchedule)
-	/*fmt.Println(env.sample.RequestWFS(env.loggedInUser, []weekdayForSchedule{
+	/*fmt.Println(env.sample.RequestWFS(env.loggedInUser, []weekdayForSchedule{ //
 		{
 			Weekday: env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024}).Weekday,
 		},
@@ -1545,7 +1688,7 @@ func main() {
 			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
 		},
 		{
-			Weekday: "Friday",
+			Weekday: env.sample.RequestWeekday(weekday{WeekdayName: "Friday"}).WeekdayName,
 		},
 	}))
 	fmt.Println(env.sample.RequestSchedules(env.loggedInUser, []schedule{
@@ -1576,24 +1719,20 @@ func main() {
 	}))
 	fmt.Println(env.sample.RequestUFS(env.loggedInUser, []unavailabilityForSchedule{
 		{
-			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
-				{
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
 					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
 					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
-				},
-			})[0].VFSID,
+			}).VFSID,
 			Date: env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024}).DateID,
 		},
 		{
 			UFSID: 2,
 		},
 		{
-			VolunteerForSchedule: env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
-				{
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
 					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
 					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}).VolunteerID,
-				},
-			})[0].VFSID,
+			}).VFSID,
 		},
 		{
 			Date: env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024}).DateID,
@@ -1631,14 +1770,14 @@ func main() {
 		//{ScheduleName: "test6-rename", ShiftsOff: 10}, // will fail
 		//{ScheduleID: 3}, // will fail
 	})
-	env.sample.DeleteSchedules(env.loggedInUser, []schedule{
-		{ScheduleName: "test1-rename"},
-		{ScheduleID: 2},
-	})
+	//env.sample.DeleteSchedules(env.loggedInUser, []schedule{
+	//	{ScheduleName: "test1-rename"},
+	//	{ScheduleID: 2},
+	//})
 	env.sample.UpdateWFS(env.loggedInUser, []weekdayForSchedule{
 		{
 			WFSID:   2,
-			Weekday: "Sunday",
+			Weekday: env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}).WeekdayName,
 		},
 		{
 			WFSID:    1,
@@ -1650,20 +1789,20 @@ func main() {
 			WFSID: 2,
 		},
 		{
-			Weekday:  "Sunday",
+			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}).WeekdayName,
 			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"}).ScheduleID,
 		},
 	})
 	env.sample.CreateWFS(env.loggedInUser, []weekdayForSchedule{
 		{
 			User:     env.loggedInUser,
-			Weekday:  "Wednesday",
+			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Wednesday"}).WeekdayName,
 			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"}).ScheduleID,
 		},
 	})
 	env.sample.CleanOrphanedWFS(env.loggedInUser, []map[schedule][]date{
 		{
-			env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"}): []date{{Weekday: "Sunday"}},
+			env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"}): []date{{Weekday: env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}).WeekdayName}},
 		},
 	})
 	env.sample.UpdateVFS(env.loggedInUser, []volunteerForSchedule{
@@ -1682,9 +1821,45 @@ func main() {
 			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
 			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Timmy"}).VolunteerID,
 		},
+	})
+	env.sample.CreateVFS(env.loggedInUser, []volunteerForSchedule{
+		{
+			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"}).ScheduleID,
+			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"}).VolunteerID,
+		},
+	})
+	env.sample.CleanOrphanedVFS(env.loggedInUser, []map[schedule][]volunteer{
+		{
+			env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"}): []volunteer{
+				env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}),
+				env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"}),
+				env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"}),
+				env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Timmy"}),
+			},
+		},
+	})
+	fmt.Println(env.sample.RequestUFSSingle(env.loggedInUser, unavailabilityForSchedule{
+		VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
+			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
+		}).VFSID,
+		Date: env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024}).DateID,
+	}))
+	fmt.Println(env.sample.RequestWFSSingle(env.loggedInUser, weekdayForSchedule{
+		Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Wednesday"}).WeekdayName,
+		Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
+	}))
+	env.sample.UpdateUFS(env.loggedInUser, []unavailabilityForSchedule{
+		{
+			UFSID: 2,
+			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
+				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"}).VolunteerID,
+			}).VFSID,
+			Date: env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024}).DateID,
+		},
 	})*/
-
 	fmt.Println("Done. Press enter to exit executable.")
 	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
-	fmt.Print(weekday{}, month{}, user{})
+	fmt.Print(month{}, user{})
 }
