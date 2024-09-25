@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -157,24 +158,23 @@ func countGTZero(intSlice []int) int {
 	return count
 }
 
-// If I return val from the loop, the error message could hint at that issue better.
-func testEmpty[T comparable](sliceOfT []T, emptyT T) bool {
+func testEmpty[T comparable](sliceOfT []T, emptyT T) (bool, T) {
 	for _, val := range sliceOfT {
 		if val == emptyT {
-			return true
+			return true, val
 		}
 	}
-	return false
+	return false, emptyT
 }
 
-func execInTx(tx *sql.Tx, query string) {
-	_, err := tx.Exec(query)
+func Must[T any](value T, err error) T { // only to be used in main function testing code. Actual implementations need to handle the errors without crashing the program (unless the final step is to crash).
 	if err != nil {
-		log.Fatalf("Error in execInTx %q: %s\n", err, query)
+		log.Fatal(err)
 	}
+	return value
 }
 
-func (sm SampleModel) CreateDatabase() {
+func (sm SampleModel) CreateDatabase() error {
 	initialTxQuery := `
 	create table Weekdays (
 		WeekdayID integer primary key autoincrement,
@@ -186,9 +186,9 @@ func (sm SampleModel) CreateDatabase() {
 	);
 	create table Dates (
 		DateID integer primary key autoincrement,
-		Month integer not null,
-		Day integer not null,
-		Year integer not null,
+		Month integer not null check (Month > 0),
+		Day integer not null check (Day > 0),
+		Year integer not null check (Year > 0),
 		Weekday text not null,
 		foreign key (Month) references Months(MonthID),
 		foreign key (Weekday) references Weekdays(WeekdayName)
@@ -206,11 +206,11 @@ func (sm SampleModel) CreateDatabase() {
 	create table Schedules (
 		ScheduleID integer primary key autoincrement,
 		ScheduleName text not null,
-		ShiftsOff integer not null,
-		VolunteersPerShift integer not null,
+		ShiftsOff integer not null check (ShiftsOff > -1),
+		VolunteersPerShift integer not null check (VolunteersPerShift > 0),
 		User text,
-		StartDate integer,
-		EndDate integer,
+		StartDate integer check (StartDate > 0),
+		EndDate integer check (EndDate > 0),
 		foreign key (User) references Users(UserName),
 		foreign key (StartDate) references Dates(DateID),
 		foreign key (EndDate) references Dates(DateID)
@@ -255,39 +255,53 @@ func (sm SampleModel) CreateDatabase() {
 	fillMonthsTxQuery := `insert into Months (MonthName) values ("January"), ("February"), ("March"), ("April"), ("May"), ("June"), ("July"), ("August"), ("September"), ("October"), ("November"), ("December");`
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateDatabase: sql.DB.Begin error: %w", err)
 	}
-	execInTx(tx, initialTxQuery)
-	execInTx(tx, fillWeekdaysTxQuery)
-	execInTx(tx, fillMonthsTxQuery)
-	execInTx(tx, `insert into Users (UserName) values ("Seth")`) // for testing only
-	fillDatesTableStmt, err := tx.Prepare(`insert into Dates (Month, Day, Year, Weekday) values (?, ?, ?, ?)`)
+	defer tx.Rollback() // this will still be executed if tx.Commit() is called, but it will return sql.ErrTxDone, which can be ignored
+	_, err = tx.Exec(initialTxQuery)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateDatabase: sql.Tx.Exec error: %w. Value of initialTxQuery is `%s`", err, initialTxQuery)
+	}
+	_, err = tx.Exec(fillWeekdaysTxQuery)
+	if err != nil {
+		return fmt.Errorf("error in CreateDatabase: sql.Tx.Exec error: %w. Value of fillWeekdaysTxQuery is `%s`", err, fillWeekdaysTxQuery)
+	}
+	_, err = tx.Exec(fillMonthsTxQuery)
+	if err != nil {
+		return fmt.Errorf("error in CreateDatabase: sql.Tx.Exec error: %w. Value of fillMonthsTxQuery is `%s`", err, fillMonthsTxQuery)
+	}
+	_, err = tx.Exec(`insert into Users (UserName) values ("Seth")`) // for testing only
+	if err != nil {
+		return fmt.Errorf("error in CreateDatabase: sql.Tx.Exec error: %w. This one is to create a user for testing, and should not appear in production", err)
+	}
+	fillDatesTableString := `insert into Dates (Month, Day, Year, Weekday) values (?, ?, ?, ?)`
+	fillDatesTableStmt, err := tx.Prepare(fillDatesTableString)
+	if err != nil {
+		return fmt.Errorf("error in CreateDatabase: sql.Tx.Prepare error: %w. Value of fillDatesTableString is `%s`", err, fillDatesTableString)
 	}
 	defer fillDatesTableStmt.Close()
 	initDate := time.Date(2023, time.January, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 365.25*40; i++ {
-		workingDate := initDate.AddDate(0, 0, i) // these should be a struct
-		workingMonth := int(workingDate.Month())
-		workingDay := workingDate.Day()
-		workingYear := workingDate.Year()
-		workingWeekday := fmt.Sprint(workingDate.Weekday())
-		//log.Println(workingMonth, workingDay, workingYear, workingWeekday)
-		_, err = fillDatesTableStmt.Exec(workingMonth, workingDay, workingYear, workingWeekday)
+		workingDate := initDate.AddDate(0, 0, i)
+		dateStruct := date{Month: int(workingDate.Month()), Day: workingDate.Day(), Year: workingDate.Year(), Weekday: fmt.Sprint(workingDate.Weekday())}
+		_, err = fillDatesTableStmt.Exec(dateStruct.Month, dateStruct.Day, dateStruct.Year, dateStruct.Weekday)
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("error in CreateDatabase: sql.Stmt.Exec error: %w. Value of dateStruct is `%+v`", err, dateStruct)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateDatabase: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
 func (sm SampleModel) SendScheduleNames(currentUser string) []string {
 	var result []string
-	scheduleStructs := sm.RequestSchedules(currentUser, []schedule{})
+	scheduleStructs, err := sm.RequestSchedules(currentUser, []schedule{})
+	if err != nil {
+		log.Fatal(err)
+	}
 	for i := 0; i < len(scheduleStructs); i++ {
 		result = append(result, scheduleStructs[i].ScheduleName)
 	}
@@ -308,49 +322,55 @@ func (sm SampleModel) RecieveAndStoreData(data SendReceiveDataStruct) { // shoul
 }
 
 // This function exists to validate WeekdayName spelling and provide WeekdayID if needed. There is no request Weekdays
-func (sm SampleModel) RequestWeekday(weekdayStruct weekday) weekday {
+func (sm SampleModel) RequestWeekday(weekdayStruct weekday) (weekday, error) {
+	if weekdayStruct == (weekday{}) {
+		return weekday{}, errors.New("error in RequestWeekday: method failed because all of the values in weekdayStruct had an empty/default values")
+	}
 	var weekdays []weekday
 	weekdayQuery := fmt.Sprintf(`select * from Weekdays where WeekdayID=%d or WeekdayName="%s"`, weekdayStruct.WeekdayID, weekdayStruct.WeekdayName)
 	rows, err := sm.DB.Query(weekdayQuery)
 	if err != nil {
-		log.Fatalf("Error in Request Weekday query: %v\n%s", err, weekdayQuery)
+		return weekday{}, fmt.Errorf("error in RequestWeekday: sql.DB.Query error: %w. Value of weekdayQuery is `%s`", err, weekdayQuery)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var weekdayStruct weekday
 		err = rows.Scan(&weekdayStruct.WeekdayID, &weekdayStruct.WeekdayName)
 		if err != nil {
-			log.Fatalf("Error in Request Weekday loop: %v", err)
+			return weekday{}, fmt.Errorf("error in RequestWeekday: sql.Rows.Scan error: %w. Value of weekdayStruct is `%+v`", err, weekdayStruct)
 		}
 		weekdays = append(weekdays, weekdayStruct)
 	}
 	err = rows.Err()
 	if err != nil {
-		log.Fatalf("Error in Request Weekday rows.Err(): %v", err)
+		return weekday{}, fmt.Errorf("error in RequestWeekday: sql.Rows.Err error: %w", err)
 	}
 	if len(weekdays) != 1 {
-		log.Fatalf("Failed to locate exactly one weekday matching %+v.\nFound %d matches.", weekdayStruct, len(weekdays))
+		return weekday{}, fmt.Errorf("failed to locate exactly one weekday matching `%+v`. Found %d matches", weekdayStruct, len(weekdays))
 	}
-	return weekdays[0]
+	return weekdays[0], nil
 }
 
-func (sm SampleModel) RequestDate(dateStruct date) date {
-	dates := sm.RequestDates([]date{dateStruct})
+func (sm SampleModel) RequestDate(dateStruct date) (date, error) {
+	dates, err := sm.RequestDates([]date{dateStruct})
+	if err != nil {
+		return date{}, fmt.Errorf("error in RequestDate %+v: %w", dateStruct, err)
+	}
 	if len(dates) != 1 {
-		log.Fatalf("Failed to locate exactly one date matching %+v.\nFound %d matches.", dateStruct, len(dates))
+		return date{}, fmt.Errorf("error in RequestDate %+v: Failed to locate exactly one date matching dateStruct. Found %d matches", dateStruct, len(dates))
 	}
-	return dates[0]
+	return dates[0], nil
 }
 
-func (sm SampleModel) RequestDates(dates []date) []date {
+func (sm SampleModel) RequestDates(dates []date) ([]date, error) {
 	dateQuery := `select * from Dates`
 	if len(dates) > 0 {
-		if testEmpty(dates, date{}) {
-			log.Fatal("RequestDates failed because one of the values in dates had an empty/default values date struct")
+		if check, failed := testEmpty(dates, date{}); check {
+			return []date{}, fmt.Errorf("error in RequestDates: method failed because one of the values in dates had an empty/default values date struct: %+v", failed)
 		}
 		dateQuery = fmt.Sprintf(`%s where (`, dateQuery)
 	} else {
-		log.Fatal("RequestDates failed because the dates argument was an empty slice. At least one date must be requested. ")
+		return []date{}, errors.New("error in RequestDates: method failed because the dates argument was an empty slice. At least one date must be requested")
 	}
 	for i := 0; i < len(dates); i++ {
 		count := countGTZero([]int{dates[i].DateID, dates[i].Month, dates[i].Day, dates[i].Year, len(dates[i].Weekday)})
@@ -402,64 +422,83 @@ func (sm SampleModel) RequestDates(dates []date) []date {
 	var result []date
 	rows, err := sm.DB.Query(dateQuery)
 	if err != nil {
-		log.Fatalf("Error in Request Dates query: %v\n%s", err, dateQuery)
+		return []date{}, fmt.Errorf("error in RequestDates: sql.DB.Query error: %w. Value of dateQuery is `%s`", err, dateQuery)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var dateStruct date
 		err = rows.Scan(&dateStruct.DateID, &dateStruct.Month, &dateStruct.Day, &dateStruct.Year, &dateStruct.Weekday)
 		if err != nil {
-			log.Fatalf("Error in Request Dates loop: %v", err)
+			return []date{}, fmt.Errorf("error in RequestDates: sql.Rows.Scan error: %w. Value of dateStruct is `%+v`", err, dateStruct)
 		}
 		result = append(result, dateStruct)
 	}
 	err = rows.Err()
 	if err != nil {
-		log.Fatalf("Error in Request Dates rows.Err(): %v", err)
+		return []date{}, fmt.Errorf("error in RequestDates: sql.Rows.Err error: %w", err)
 	}
-	return result
+	return result, nil
 }
 
-func (sm SampleModel) CreateVolunteers(currentUser string, toCreate []volunteer) {
-	check := sm.RequestVolunteers(currentUser, toCreate)
+func (sm SampleModel) CreateVolunteers(currentUser string, toCreate []volunteer) error {
+	check, err := sm.RequestVolunteers(currentUser, toCreate)
+	if err != nil {
+		return fmt.Errorf("error in CreateVolunteers: %w", err)
+	}
 	if len(check) > 0 {
-		log.Fatalf("Create Volunteers failed because at least one of the volunteers to be created already exists in the database.\nExisting volunteer(s): %+v", check)
+		return fmt.Errorf("error in CreateVolunteers: method failed because at least one of the volunteers to be created already exists in the database. Existing volunteer(s): %+v", check)
+	}
+	checkDuplicates := []volunteer{}
+	for _, val := range toCreate { // User and VolunteerID do not need to be provided in the volunteer structs
+		if val.VolunteerName == (volunteer{}.VolunteerName) {
+			return fmt.Errorf("error in CreateVolunteers: method failed because at least one of the volunteer structs in toCreate did not have a value for VolunteerName: %+v", val)
+		}
+		if !slices.Contains(checkDuplicates, volunteer{VolunteerName: val.VolunteerName}) {
+			checkDuplicates = append(checkDuplicates, volunteer{VolunteerName: val.VolunteerName})
+		} else {
+			return fmt.Errorf("error in CreateVolunteers: method failed because at least one of the volunteer structs in toCreate was a duplicate of another volunteer struct in toCreate: %+v", val)
+		}
 	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateVolunteers: sql.DB.Begin error: %w", err)
 	}
+	defer tx.Rollback()
 	fillVolunteersTableString := `insert into Volunteers (VolunteerName, User) values (?, ?)`
 	fillVolunteersTableStmt, err := tx.Prepare(fillVolunteersTableString)
 	if err != nil {
-		log.Fatalf("Error in Create Volunteers statement: %v\n%s", err, fillVolunteersTableString)
+		return fmt.Errorf("error in CreateVolunteers: sql.Tx.Prepare error: %w. Value of fillVolunteersTableString is `%s`", err, fillVolunteersTableString)
 	}
 	defer fillVolunteersTableStmt.Close()
 	for i := 0; i < len(toCreate); i++ {
 		_, err = fillVolunteersTableStmt.Exec(toCreate[i].VolunteerName, currentUser)
 		if err != nil {
-			log.Fatalf("Error in Create Volunteers loop: %v", err)
+			return fmt.Errorf("error in CreateVolunteers: sql.Stmt.Exec error: %w. toCreate[i] is `%+v`", err, toCreate[i])
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateVolunteers: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) RequestVolunteer(currentUser string, volunteerStruct volunteer) volunteer {
-	volunteers := sm.RequestVolunteers(currentUser, []volunteer{volunteerStruct})
+func (sm SampleModel) RequestVolunteer(currentUser string, volunteerStruct volunteer) (volunteer, error) {
+	volunteers, err := sm.RequestVolunteers(currentUser, []volunteer{volunteerStruct})
+	if err != nil {
+		return volunteer{}, fmt.Errorf("error in RequestVolunteer %+v: %w", volunteerStruct, err)
+	}
 	if len(volunteers) != 1 {
-		log.Fatalf("Failed to locate exactly one volunteer matching %+v.\nFound %d matches.", volunteerStruct, len(volunteers))
+		return volunteer{}, fmt.Errorf("error in RequestVolunteer %+v. Failed to locate exactly one volunteer matching volunteerStruct. Found %d matches", volunteerStruct, len(volunteers))
 	}
-	return volunteers[0]
+	return volunteers[0], nil
 }
 
-func (sm SampleModel) RequestVolunteers(currentUser string, volunteers []volunteer) []volunteer {
+func (sm SampleModel) RequestVolunteers(currentUser string, volunteers []volunteer) ([]volunteer, error) {
 	volunteersQuery := fmt.Sprintf(`select * from Volunteers where User = "%s"`, currentUser)
 	if len(volunteers) > 0 {
-		if testEmpty(volunteers, volunteer{}) {
-			log.Fatal("RequestVolunteers failed because one of the values in volunteers had an empty/default values volunteer struct")
+		if check, failed := testEmpty(volunteers, volunteer{}); check {
+			return []volunteer{}, fmt.Errorf("error in RequestVolunteers: method failed because one of the values in volunteers had an empty/default values volunteer struct: %+v", failed)
 		}
 		volunteersQuery = fmt.Sprintf(`%s and (`, volunteersQuery)
 	}
@@ -499,130 +538,211 @@ func (sm SampleModel) RequestVolunteers(currentUser string, volunteers []volunte
 	var result []volunteer
 	rows, err := sm.DB.Query(volunteersQuery)
 	if err != nil {
-		log.Fatalf("Error in Request Volunteers query: %v\n%s", err, volunteersQuery)
+		return []volunteer{}, fmt.Errorf("error in RequestVolunteers: sql.DB.Query error: %w. Value of volunteersQuery is `%s`", err, volunteersQuery)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var volunteerStruct volunteer
 		err = rows.Scan(&volunteerStruct.VolunteerID, &volunteerStruct.VolunteerName, &volunteerStruct.User)
 		if err != nil {
-			log.Fatalf("Error in Request Volunteers loop: %v", err)
+			return []volunteer{}, fmt.Errorf("error in RequestVolunteers: sql.Rows.Scan error: %w. Value of volunteerStruct is `%+v`", err, volunteerStruct)
 		}
 		result = append(result, volunteerStruct)
 	}
 	err = rows.Err()
 	if err != nil {
-		log.Fatalf("Error in Request Volunteers rows.Err(): %v", err)
+		return []volunteer{}, fmt.Errorf("error in RequestVolunteers: sql.Rows.Err error: %w", err)
 	}
-	return result
+	return result, nil
 }
 
-func (sm SampleModel) UpdateVolunteers(currentUser string, toUpdate []volunteer) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	if testEmpty(toUpdate, volunteer{}) {
-		log.Fatal("Update Volunteers failed because one of the values in toUpdate had an empty/default values volunteer struct")
+func (sm SampleModel) UpdateVolunteers(currentUser string, toUpdate []volunteer) error { // figure out what to return as a completed/failed value, instead of just crashing the program
+	if check, failed := testEmpty(toUpdate, volunteer{}); check {
+		return fmt.Errorf("error in UpdateVolunteers: method failed because one of the values in toUpdate had an empty/default values volunteer struct: %+v", failed)
+	}
+	for _, val := range toUpdate {
+		if val.VolunteerID == (volunteer{}.VolunteerID) { // User does not need to be provided in the volunteer struct
+			return fmt.Errorf("error in UpdateVolunteers: method failed because one of the volunteer structs in toUpdate had an empty/default value for VolunteerID: %+v", val)
+		} else if val.VolunteerName == (volunteer{}.VolunteerName) {
+			return fmt.Errorf("error in UpdateVolunteers: method failed because one of the volunteer structs in toUpdate had an empty/default value for VolunteerName: %+v", val)
+		} else if check, err := sm.RequestVolunteers(currentUser, []volunteer{{VolunteerName: val.VolunteerName, User: currentUser}}); len(check) > 0 {
+			if err != nil {
+				return fmt.Errorf("error in UpdateVolunteers `%+v`: %w", val, err)
+			}
+			return fmt.Errorf("error in UpdateVolunteers: method failed because one of the volunteer structs in toUpdate would create a duplicate volunteer (each volunteer name must be unique per user): %+v", val)
+		}
 	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in UpdateVolunteers: sql.DB.Begin error: %w", err)
 	}
-	updateVolunteersStmt, err := tx.Prepare(fmt.Sprintf(`update Volunteers set VolunteerName=? where User="%s" and VolunteerID=?`, currentUser))
+	defer tx.Rollback()
+	updateVolunteersString := fmt.Sprintf(`update Volunteers set VolunteerName=? where User="%s" and VolunteerID=?`, currentUser)
+	updateVolunteersStmt, err := tx.Prepare(updateVolunteersString)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in UpdateVolunteers: sql.Tx.Prepare error: %w. value of updateVolunteersString is `%s`", err, updateVolunteersString)
 	}
 	defer updateVolunteersStmt.Close()
 	for _, val := range toUpdate {
-		if val.VolunteerID == 0 {
-			log.Fatal("Update Volunteers failed because one of the values in toUpdate had an empty/default value for VolunteerID")
-		}
 		_, err = updateVolunteersStmt.Exec(val.VolunteerName, val.VolunteerID)
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("error in UpdateVolunteers: sql.Stmt.Exec error: %w. Value of val is `%+v`", err, val)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in UpdateVolunteers: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) DeleteVolunteers(currentUser string, toDelete []volunteer) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	tx, err := sm.DB.Begin()
-	if err != nil {
-		log.Fatalf("Error in Delete Volunteers begin tx: %v", err)
+// Will delete Volunteers database entries that match the VolunteerID or that match the VolunteerName provided in each volunteer struct. If a VolunteerID > 0 is provided, the value for VolunteerName is ignored for that volunteer struct.
+func (sm SampleModel) DeleteVolunteers(currentUser string, toDelete []volunteer) error { // figure out what to return as a completed/failed value, instead of just crashing the program
+	if check, failed := testEmpty(toDelete, volunteer{}); check {
+		return fmt.Errorf("error in DeleteVolunteers: method failed because one of the values in toDelete had an empty/default values volunteer struct: %+v", failed)
 	}
-	deleteVolunteersStmt, err := tx.Prepare(fmt.Sprintf(`delete from Volunteers where User="%s" and (VolunteerName=? or VolunteerID=?)`, currentUser))
-	if err != nil {
-		log.Fatalf("Error in Delete Volunteers stmt: %v", err)
-	}
-	defer deleteVolunteersStmt.Close()
 	for _, val := range toDelete {
-		_, err = deleteVolunteersStmt.Exec(val.VolunteerName, val.VolunteerID)
+		if val.VolunteerID == (volunteer{}.VolunteerID) && val.VolunteerName == (volunteer{}.VolunteerName) { // User does not need to be provided in the volunteer struct. One of VolunteerID and VolunteerName must be provided
+			return fmt.Errorf("error in DeleteVolunteers: method failed because one of the volunteer structs in toDelete had empty/default values for VolunteerID and VolunteerName (at least one must be provided): %+v", val)
+		}
+	}
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("error in DeleteVolunteers: sql.DB.Begin error: %w", err)
+	}
+	defer tx.Rollback()
+	for _, val := range toDelete {
+		var deleteVolunteerString string
+		if val.VolunteerID > 0 {
+			deleteVolunteerString = fmt.Sprintf(`delete from Volunteers where User="%s" and VolunteerID=%d`, currentUser, val.VolunteerID)
+		} else {
+			deleteVolunteerString = fmt.Sprintf(`delete from Volunteers where User="%s" and VolunteerName="%s"`, currentUser, val.VolunteerName)
+		}
+		_, err := tx.Exec(deleteVolunteerString)
 		if err != nil {
-			log.Fatalf("Error in Delete Volunteers loop: %v", err)
+			return fmt.Errorf("error in DeleteVolunteers: sql.Tx.Exec error %w. Value of deleteVolunteerString is `%s`", err, deleteVolunteerString)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Error in Delete Volunteers tx commit: %v", err)
+		return fmt.Errorf("error in DeleteVolunteers: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) CleanOrphanedVolunteers(currentUser string) { // figure out what to return as a completed/failed value, instead of just crashing the program
+func (sm SampleModel) CleanOrphanedVolunteers(currentUser string) error { // figure out what to return as a completed/failed value, instead of just crashing the program
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatalf("Error in Clean Orphaned Volunteers begin tx: %v", err)
+		return fmt.Errorf("error in CleanOrphanedVolunteers: sql.DB.Begin error: %w", err)
 	}
-	execInTx(tx, fmt.Sprintf(`delete from Volunteers where User = "%s" and VolunteerID not in (select Volunteer from VolunteersForSchedule)`, currentUser))
+	defer tx.Rollback()
+	cleanOrphanedVolunteersString := fmt.Sprintf(`delete from Volunteers where User = "%s" and VolunteerID not in (select Volunteer from VolunteersForSchedule)`, currentUser)
+	_, err = tx.Exec(cleanOrphanedVolunteersString)
+	if err != nil {
+		return fmt.Errorf("error in CleanOrphanedVolunteers: sql.Tx.Exec error: %w. Value of cleanOrphanedVolunteersString is `%s`", err, cleanOrphanedVolunteersString)
+	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Error in Clean Orphaned Volunteers tx commit: %v", err)
+		return fmt.Errorf("error in CleanOrphanedVolunteers: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) CreateSchedules(currentUser string, toCreate []schedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	check := sm.RequestSchedulesExtended(currentUser, toCreate, true)
+// This function is the simplified version of CreateSchedulesExtended and does not allow schedules to be created where ShiftsOff = 0
+func (sm SampleModel) CreateSchedules(currentUser string, toCreate []schedule) error {
+	err := sm.CreateSchedulesExtended(currentUser, toCreate, false)
+	if err != nil {
+		return fmt.Errorf("error in CreateSchedules: %w", err)
+	}
+	return nil
+}
+
+func (sm SampleModel) CreateSchedulesExtended(currentUser string, toCreate []schedule, includeShiftsOff0 bool) error {
+	check, err := sm.RequestSchedulesExtended(currentUser, toCreate, includeShiftsOff0)
+	if err != nil {
+		return fmt.Errorf("error in CreateSchedulesExtended: %w", err)
+	}
 	if len(check) > 0 {
-		log.Fatalf("Create Schedules failed because at least one of the schedules to be created already exists in the database.\nExisting schedule(s): %+v", check)
+		return fmt.Errorf("error in CreateSchedulesExtended: method failed because at least one of the schedules to be created already exists in the database. Existing schedule(s): %+v", check)
+	}
+	checkDuplicates := []schedule{}
+	for _, val := range toCreate { // User and ScheduleID do not need to be provided in the schedule structs
+		if val.ScheduleName <= (schedule{}.ScheduleName) {
+			return fmt.Errorf("error in CreateSchedulesExtended: method failed because at least one of the schedule structs in toCreate did not have a valid value for ScheduleName: %+v", val)
+		}
+		if !includeShiftsOff0 && val.ShiftsOff <= (schedule{}.ShiftsOff) || val.ShiftsOff <= -1 {
+			return fmt.Errorf("error in CreateSchedulesExtended: method failed because at least one of the schedule structs in toCreate did not have a valid value for ShiftsOff: %+v", val)
+		}
+		if val.VolunteersPerShift <= (schedule{}.VolunteersPerShift) {
+			return fmt.Errorf("error in CreateSchedulesExtended: method failed because at least one of the schedule structs in toCreate did not have a valid value for VolunteersPerShift: %+v", val)
+		}
+		if val.StartDate <= (schedule{}.StartDate) {
+			return fmt.Errorf("error in CreateSchedulesExtended: method failed because at least one of the schedule structs in toCreate did not have a valid value for StartDate: %+v", val)
+		}
+		if val.EndDate <= (schedule{}.EndDate) {
+			return fmt.Errorf("error in CreateSchedulesExtended: method failed because at least one of the schedule structs in toCreate did not have a valid value for EndDate: %+v", val)
+		}
+		if !slices.Contains(checkDuplicates, schedule{ScheduleName: val.ScheduleName, ShiftsOff: val.ShiftsOff, VolunteersPerShift: val.VolunteersPerShift, StartDate: val.StartDate, EndDate: val.EndDate}) {
+			checkDuplicates = append(checkDuplicates, schedule{ScheduleName: val.ScheduleName, ShiftsOff: val.ShiftsOff, VolunteersPerShift: val.VolunteersPerShift, StartDate: val.StartDate, EndDate: val.EndDate})
+		} else {
+			return fmt.Errorf("error in CreateSchedulesExtended: method failed because at least one of the schedule structs in toCreate was a duplicate of another schedule struct in toCreate: %+v", val)
+		}
 	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateSchedulesExtended: sql.DB.Begin error: %w", err)
 	}
+	defer tx.Rollback()
 	fillSchedulesTableString := `insert into Schedules (ScheduleName, ShiftsOff, VolunteersPerShift, User, StartDate, EndDate) values (?, ?, ?, ?, ?, ?)`
 	fillSchedulesTableStmt, err := tx.Prepare(fillSchedulesTableString)
 	if err != nil {
-		log.Fatalf("Error in Create Schedules statement: %v\n%s", err, fillSchedulesTableString)
+		return fmt.Errorf("error in CreateSchedulesExtended: sql.Tx.Prepare error: %w. Value of fillSchedulesTableString is `%s`", err, fillSchedulesTableString)
 	}
 	defer fillSchedulesTableStmt.Close()
 	for i := 0; i < len(toCreate); i++ {
 		_, err = fillSchedulesTableStmt.Exec(toCreate[i].ScheduleName, toCreate[i].ShiftsOff, toCreate[i].VolunteersPerShift, currentUser, toCreate[i].StartDate, toCreate[i].EndDate)
 		if err != nil {
-			log.Fatalf("Error in Create Schedules loop: %v", err)
+			return fmt.Errorf("error in CreateSchedulesExtended: sql.Stmt.Exec error: %w. Value of toCreate[i] is `%+v`", err, toCreate[i])
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateSchedulesExtended: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
 // Calls RequestSchedules with scheduleStruct and verifies exactly one database row matches.
-func (sm SampleModel) RequestSchedule(currentUser string, scheduleStruct schedule) schedule {
-	schedules := sm.RequestSchedules(currentUser, []schedule{scheduleStruct})
-	if len(schedules) != 1 {
-		log.Fatalf("Failed to locate exactly one schedule matching %+v.\nFound %d matches.", scheduleStruct, len(schedules))
+func (sm SampleModel) RequestSchedule(currentUser string, scheduleStruct schedule) (schedule, error) {
+	schedules, err := sm.RequestSchedules(currentUser, []schedule{scheduleStruct})
+	if err != nil {
+		return schedule{}, fmt.Errorf("error in RequestSchedule: %w", err)
 	}
-	return schedules[0]
+	if len(schedules) != 1 {
+		return schedule{}, fmt.Errorf("error in RequestSchedule: method failed to locate exactly one schedule matching %+v. Found %d matches", scheduleStruct, len(schedules))
+	}
+	return schedules[0], nil
 }
 
 // This function is the simple version of RequestSchedulesExtended and does not allow ShiftsOff = 0 to be queried.
-func (sm SampleModel) RequestSchedules(currentUser string, schedules []schedule) []schedule {
-	return sm.RequestSchedulesExtended(currentUser, schedules, false)
+func (sm SampleModel) RequestSchedules(currentUser string, schedules []schedule) ([]schedule, error) {
+	retrievedSchedules, err := sm.RequestSchedulesExtended(currentUser, schedules, false)
+	if err != nil {
+		return []schedule{}, fmt.Errorf("error in RequestSchedules: %w", err)
+	}
+	return retrievedSchedules, nil
 }
 
 // This version of RequestSchedules allows ShiftsOff = 0 to be queried, but any default schedule structs will have ShiftsOff: 0 implicitly, so ShiftsOff must be set to a desired value or to -1 to be ignored.
-func (sm SampleModel) RequestSchedulesExtended(currentUser string, schedules []schedule, includeShiftsOff0 bool) []schedule {
+func (sm SampleModel) RequestSchedulesExtended(currentUser string, schedules []schedule, includeShiftsOff0 bool) ([]schedule, error) {
 	schedulesQuery := fmt.Sprintf(`select * from Schedules where User = "%s"`, currentUser)
+	if !includeShiftsOff0 { // I have to check for this edge case
+		for _, val := range schedules {
+			if val.ShiftsOff <= -1 {
+				return []schedule{}, fmt.Errorf("error in RequestSchedulesExtended: method failed because includeShiftsOff0 is false but one of the schedule structs contains ShiftsOff<=-1: %+v", val)
+			}
+		}
+	}
 	if len(schedules) > 0 {
 		var checkAgainst schedule
 		if includeShiftsOff0 {
@@ -630,8 +750,8 @@ func (sm SampleModel) RequestSchedulesExtended(currentUser string, schedules []s
 		} else {
 			checkAgainst = schedule{}
 		}
-		if testEmpty(schedules, checkAgainst) {
-			log.Fatal("RequestSchedules failed because one of the values in schedules had an empty/default values schedule struct")
+		if check, failed := testEmpty(schedules, checkAgainst); check {
+			return []schedule{}, fmt.Errorf("error in RequestSchedulesExtended: method failed because one of the values in schedules had an empty/default values schedule struct: %+v", failed)
 		}
 		schedulesQuery = fmt.Sprintf(`%s and (`, schedulesQuery)
 	}
@@ -704,50 +824,56 @@ func (sm SampleModel) RequestSchedulesExtended(currentUser string, schedules []s
 	var result []schedule
 	rows, err := sm.DB.Query(schedulesQuery)
 	if err != nil {
-		log.Fatalf("Error in Request Schedules query: %v\n%s", err, schedulesQuery)
+		return []schedule{}, fmt.Errorf("error in RequestSchedulesExtended: sql.DB.Query error: %w. Value of schedulesQuery is `%s`", err, schedulesQuery)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var userSchedule schedule
 		err = rows.Scan(&userSchedule.ScheduleID, &userSchedule.ScheduleName, &userSchedule.ShiftsOff, &userSchedule.VolunteersPerShift, &userSchedule.User, &userSchedule.StartDate, &userSchedule.EndDate)
 		if err != nil {
-			log.Fatalf("Error in Request Schedules loop: %v", err)
+			return []schedule{}, fmt.Errorf("error in RequestSchedulesExtended: sql.Rows.Scan error: %w. Value of userSchedule is `%+v`", err, userSchedule)
 		}
 		result = append(result, userSchedule)
 	}
 	err = rows.Err()
 	if err != nil {
-		log.Fatalf("Error in Request Schedules rows.Err(): %v", err)
+		return []schedule{}, fmt.Errorf("error in RequestSchedulesExtended: sql.Rows.Err error: %w", err)
 	}
-	return result
+	return result, nil
 }
 
 // This function is the simple version of UpdateSchedulesExtended and does not allow columns to set ShiftsOff = 0.
-func (sm SampleModel) UpdateSchedules(currentUser string, toUpdate []schedule) {
-	sm.UpdateSchedulesExtended(currentUser, toUpdate, false)
+func (sm SampleModel) UpdateSchedules(currentUser string, toUpdate []schedule) error {
+	return sm.UpdateSchedulesExtended(currentUser, toUpdate, false)
 }
 
 // This version of UpdateSchedulesExtended allows ShiftsOff = 0 to be queried, but any default schedule structs will have ShiftsOff: 0 implicitly, so ShiftsOff must be set to a desired value or to -1 to be ignored.
-func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []schedule, includeShiftsOff0 bool) { // figure out what to return as a completed/failed value, instead of just crashing the program
+func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []schedule, includeShiftsOff0 bool) error { // figure out what to return as a completed/failed value, instead of just crashing the program
 	var checkAgainst schedule
 	if includeShiftsOff0 {
 		checkAgainst = schedule{ShiftsOff: -1}
 	} else {
 		checkAgainst = schedule{}
 	}
-	if testEmpty(toUpdate, checkAgainst) {
-		log.Fatal("Update Schedules failed because one of the values in toUpdate had an empty/default values schedule struct")
+	if check, failed := testEmpty(toUpdate, checkAgainst); check {
+		return fmt.Errorf("error in UpdateSchedulesExtended: method failed because one of the values in toUpdate had an empty/default values schedule struct: %+v", failed)
 	}
 	head := `update Schedules set`
 	tail := fmt.Sprintf(`where User="%s" and ScheduleID=?`, currentUser)
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatalf("Error in Update Schedules begin tx: %v", err)
+		return fmt.Errorf("error in UpdateSchedulesExtended: sql.DB.Begin error: %w", err)
 	}
+	defer tx.Rollback()
 	for _, val := range toUpdate {
 		if val.ScheduleID == 0 {
-			log.Fatal("Update Schedules failed because one of the values in toUpdate had an empty/default value for ScheduleID")
+			return fmt.Errorf("error in UpdateSchedulesExtended: method failed because one of the values in toUpdate had an empty/default value for ScheduleID: %+v", val)
 		}
+		currentSchedule, err := sm.RequestSchedule(currentUser, schedule{ScheduleID: val.ScheduleID})
+		if err != nil {
+			return fmt.Errorf("error in UpdateSchedulesExtended: %w", err)
+		}
+		currentSchedule.ScheduleID = 0
 		updateSchedulesString := head
 		var count int
 		if includeShiftsOff0 {
@@ -757,7 +883,7 @@ func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []sch
 		}
 		count-- // This is needed because a ScheduleID has been provided (verified at the start of this loop).
 		if count == 0 {
-			log.Fatal("Update Schedules failed because only one value was provided in a schedule struct. At least two values (a ScheduleID and a value to update) must be provided")
+			return fmt.Errorf("error in UpdateSchedulesExtended: method failed because only one value was provided in a schedule struct. At least two values (a ScheduleID and a value to update) must be provided: %+v", val)
 		}
 		// count is at least 1
 		//fmt.Println(count)
@@ -765,6 +891,7 @@ func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []sch
 		if len(val.ScheduleName) > 0 {
 			updateSchedulesString = fmt.Sprintf(`%s ScheduleName="%s"`, updateSchedulesString, val.ScheduleName)
 			count--
+			currentSchedule.ScheduleName = val.ScheduleName
 			if count > 0 {
 				updateSchedulesString = fmt.Sprintf(`%s,`, updateSchedulesString)
 			}
@@ -774,6 +901,7 @@ func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []sch
 		if val.ShiftsOff > 0 || includeShiftsOff0 && val.ShiftsOff > -1 {
 			updateSchedulesString = fmt.Sprintf(`%s ShiftsOff=%d`, updateSchedulesString, val.ShiftsOff)
 			count--
+			currentSchedule.ShiftsOff = val.ShiftsOff
 			if count > 0 {
 				updateSchedulesString = fmt.Sprintf(`%s,`, updateSchedulesString)
 			}
@@ -783,6 +911,7 @@ func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []sch
 		if val.VolunteersPerShift > 0 {
 			updateSchedulesString = fmt.Sprintf(`%s VolunteersPerShift=%d`, updateSchedulesString, val.VolunteersPerShift)
 			count--
+			currentSchedule.VolunteersPerShift = val.VolunteersPerShift
 			if count > 0 {
 				updateSchedulesString = fmt.Sprintf(`%s,`, updateSchedulesString)
 			}
@@ -792,6 +921,7 @@ func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []sch
 		if val.StartDate > 0 {
 			updateSchedulesString = fmt.Sprintf(`%s StartDate=%d`, updateSchedulesString, val.StartDate)
 			count--
+			currentSchedule.StartDate = val.StartDate
 			if count > 0 {
 				updateSchedulesString = fmt.Sprintf(`%s,`, updateSchedulesString)
 			}
@@ -800,90 +930,128 @@ func (sm SampleModel) UpdateSchedulesExtended(currentUser string, toUpdate []sch
 		}
 		if val.EndDate > 0 {
 			updateSchedulesString = fmt.Sprintf(`%s EndDate=%d`, updateSchedulesString, val.EndDate)
+			currentSchedule.EndDate = val.EndDate
 			//fmt.Println(count)
 			//fmt.Println(updateSchedulesString)
 		}
 		updateSchedulesString = fmt.Sprintf(`%s %s`, updateSchedulesString, tail)
 		//fmt.Println(count)
 		//fmt.Println(updateSchedulesString)
+		if check, err := sm.RequestSchedulesExtended(currentUser, []schedule{currentSchedule}, includeShiftsOff0); err != nil {
+			return fmt.Errorf("error in UpdateSchedulesExtended: %w", err)
+		} else if len(check) > 0 {
+			return fmt.Errorf("error in UpdateSchedulesExtended: method failed because it would create a duplicate schedule: %+v", val)
+		}
 		updateSchedulesStmt, err := tx.Prepare(updateSchedulesString)
 		if err != nil {
-			log.Fatalf("Error in Update Schedules stmt prepare: %v", err)
+			return fmt.Errorf("error in UpdateSchedulesExtended: sql.Tx.Prepare error: %w. Value of updateSchedulesString is `%s`", err, updateSchedulesString)
 		}
 		defer updateSchedulesStmt.Close()
 		_, err = updateSchedulesStmt.Exec(val.ScheduleID)
 		if err != nil {
-			log.Fatalf("Error in Update Schedules stmt exec: %v", err)
+			return fmt.Errorf("error in UpdateSchedulesExtended: sql.Stmt.Exec error: %w. Value of val is %+v", err, val)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Error in Update Schedules tx commit: %v", err)
+		return fmt.Errorf("error in UpdateSchedulesExtended: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) DeleteSchedules(currentUser string, toDelete []schedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	tx, err := sm.DB.Begin()
-	if err != nil {
-		log.Fatalf("Error in Delete Schedules begin tx: %v", err)
-	}
-	deleteSchedulesStmt, err := tx.Prepare(fmt.Sprintf(`delete from Schedules where User="%s" and (ScheduleName=? or ScheduleID=?)`, currentUser))
-	if err != nil {
-		log.Fatalf("Error in Delete Schedules stmt: %v", err)
-	}
-	defer deleteSchedulesStmt.Close()
+// Will delete Schedule database entries that match the ScheduleID or that match the ScheduleName provided in each schedule struct. If a ScheduleID > 0 is provided, the value for ScheduleName is ignored for that schedule struct.
+func (sm SampleModel) DeleteSchedules(currentUser string, toDelete []schedule) error { // figure out what to return as a completed/failed value, instead of just crashing the program
 	for _, val := range toDelete {
-		_, err = deleteSchedulesStmt.Exec(val.ScheduleName, val.ScheduleID)
+		if val.ScheduleID < 1 && len(val.ScheduleName) == 0 {
+			return fmt.Errorf("error in DeleteSchedules: method failed because one of the schedule structs did not have a value for ScheduleID or ScheduleName (at least one must be provided): %+v", val)
+		}
+	}
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("error in DeleteSchedules: sql.DB.Begin error: %w", err)
+	}
+	defer tx.Rollback()
+	for _, val := range toDelete {
+		var deleteScheduleString string
+		if val.ScheduleID > 0 {
+			deleteScheduleString = fmt.Sprintf(`delete from Schedules where User="%s" and ScheduleID=%d`, currentUser, val.ScheduleID)
+		} else {
+			deleteScheduleString = fmt.Sprintf(`delete from Schedules where User="%s" and ScheduleName="%s"`, currentUser, val.ScheduleName)
+		}
+		_, err := tx.Exec(deleteScheduleString)
 		if err != nil {
-			log.Fatalf("Error in Delete Schedules loop: %v", err)
+			return fmt.Errorf("error in DeleteSchedules: sql.Tx.Exec error: %w. Value of deleteScheduleString is %s", err, deleteScheduleString)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Error in Delete Schedules tx commit: %v", err)
+		return fmt.Errorf("error in DeleteSchedules: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) CreateWFS(currentUser string, toCreate []weekdayForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	check := sm.RequestWFS(currentUser, toCreate)
+func (sm SampleModel) CreateWFS(currentUser string, toCreate []weekdayForSchedule) error { // figure out what to return as a completed/failed value, instead of just crashing the program
+	check, err := sm.RequestWFS(currentUser, toCreate)
+	if err != nil {
+		return fmt.Errorf("error in CreateWFS: %w", err)
+	}
 	if len(check) > 0 {
-		log.Fatalf("Create WFS failed because at least one of the weekdayForSchedule entries to be created already exists in the database.\nExisting weekdayForSchedule entry(s): %+v", check)
+		return fmt.Errorf("error in CreateWFS: method failed because at least one of the weekdayForSchedule entries to be created already exists in the database. Existing weekdayForSchedule(s): %+v", check)
+	}
+	checkDuplicates := []weekdayForSchedule{}
+	for _, val := range toCreate { // User and WFSID do not need to be provided in the weekdayForSchedule structs
+		if val.Weekday == (weekdayForSchedule{}.Weekday) {
+			return fmt.Errorf("error in CreateWFS: method failed because at least one of the weekdayForSchedule structs in toCreate did not have a value for Weekday: %+v", val)
+		}
+		if val.Schedule == (weekdayForSchedule{}.Schedule) {
+			return fmt.Errorf("error in CreateWFS: method failed because at least one of the weekdayForSchedule structs in toCreate did not have a value for Schedule: %+v", val)
+		}
+		if !slices.Contains(checkDuplicates, weekdayForSchedule{Weekday: val.Weekday, Schedule: val.Schedule}) {
+			checkDuplicates = append(checkDuplicates, weekdayForSchedule{Weekday: val.Weekday, Schedule: val.Schedule})
+		} else {
+			return fmt.Errorf("error in CreateWFS: method failed because at least one of the weekdayForSchedule structs in toCreate was a duplicate of another weekdayForSchedule struct in toCreate: %+v", val)
+		}
 	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateWFS: sql.DB.Begin error: %w", err)
 	}
+	defer tx.Rollback()
 	fillWFSTableString := `insert into WeekdaysForSchedule (User, Weekday, Schedule) values (?, ?, ?)`
 	fillWFSTableStmt, err := tx.Prepare(fillWFSTableString)
 	if err != nil {
-		log.Fatalf("Error in Create WFS statement: %v\n%s", err, fillWFSTableString)
+		return fmt.Errorf("error in CreateWFS: sql.Tx.Prepare error: %w. Value of fillWFSTableString is `%s`", err, fillWFSTableString)
 	}
 	defer fillWFSTableStmt.Close()
 	for i := 0; i < len(toCreate); i++ {
 		_, err = fillWFSTableStmt.Exec(currentUser, toCreate[i].Weekday, toCreate[i].Schedule)
 		if err != nil {
-			log.Fatalf("Error in Create WFS loop: %v", err)
+			return fmt.Errorf("error in CreateWFS: sql.Stmt.Exec error: %w. Value of toCreate[i] is `%+v`", err, toCreate[i])
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateWFS: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) RequestWFSSingle(currentUser string, volunteerForScheduleStruct weekdayForSchedule) weekdayForSchedule {
-	weekdaysForSchedule := sm.RequestWFS(currentUser, []weekdayForSchedule{volunteerForScheduleStruct})
+func (sm SampleModel) RequestWFSSingle(currentUser string, volunteerForScheduleStruct weekdayForSchedule) (weekdayForSchedule, error) {
+	weekdaysForSchedule, err := sm.RequestWFS(currentUser, []weekdayForSchedule{volunteerForScheduleStruct})
+	if err != nil {
+		return weekdayForSchedule{}, fmt.Errorf("error in RequestWFSSingle: %w", err)
+	}
 	if len(weekdaysForSchedule) != 1 {
-		log.Fatalf("Failed to locate exactly one WFS matching %+v.\nFound %d matches.", volunteerForScheduleStruct, len(weekdaysForSchedule))
+		return weekdayForSchedule{}, fmt.Errorf("error in RequestWFSSingle: method failed to locate exactly one WFS matching %+v. Found %d matches", volunteerForScheduleStruct, len(weekdaysForSchedule))
 	}
-	return weekdaysForSchedule[0]
+	return weekdaysForSchedule[0], nil
 }
 
-func (sm SampleModel) RequestWFS(currentUser string, weekdaysForSchedule []weekdayForSchedule) []weekdayForSchedule {
+func (sm SampleModel) RequestWFS(currentUser string, weekdaysForSchedule []weekdayForSchedule) ([]weekdayForSchedule, error) {
 	weekdaysForScheduleQuery := fmt.Sprintf(`select * from WeekdaysForSchedule where User = "%s"`, currentUser)
 	if len(weekdaysForSchedule) > 0 {
-		if testEmpty(weekdaysForSchedule, weekdayForSchedule{}) {
-			log.Fatal("RequestWFS failed because one of the values in weekdaysForSchedule had an empty/default values weekdayForSchedule struct")
+		if check, failed := testEmpty(weekdaysForSchedule, weekdayForSchedule{}); check {
+			return []weekdayForSchedule{}, fmt.Errorf("error in RequestWFS: method failed because one of the values in weekdaysForSchedule had an empty/default values weekdayForSchedule struct: %+v", failed)
 		}
 		weekdaysForScheduleQuery = fmt.Sprintf(`%s and (`, weekdaysForScheduleQuery)
 	}
@@ -930,43 +1098,49 @@ func (sm SampleModel) RequestWFS(currentUser string, weekdaysForSchedule []weekd
 	var result []weekdayForSchedule
 	rows, err := sm.DB.Query(weekdaysForScheduleQuery)
 	if err != nil {
-		log.Fatalf("Error in Request WFS query: %v\n%s", err, weekdaysForScheduleQuery)
+		return []weekdayForSchedule{}, fmt.Errorf("error in RequestWFS: sql.DB.Query error: %w. Value of weekdaysForScheduleQuery is `%s`", err, weekdaysForScheduleQuery)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var weekdayForScheduleStruct weekdayForSchedule
 		err = rows.Scan(&weekdayForScheduleStruct.WFSID, &weekdayForScheduleStruct.User, &weekdayForScheduleStruct.Weekday, &weekdayForScheduleStruct.Schedule)
 		if err != nil {
-			log.Fatalf("Error in Request WFS loop: %v", err)
+			return []weekdayForSchedule{}, fmt.Errorf("error in RequestWFS: sql.Rows.Scan error: %w. value of weekdayForScheduleStruct is `%+v`", err, weekdayForScheduleStruct)
 		}
 		result = append(result, weekdayForScheduleStruct)
 	}
 	err = rows.Err()
 	if err != nil {
-		log.Fatalf("Error in Request WFS rows.Err(): %v", err)
+		return []weekdayForSchedule{}, fmt.Errorf("error in RequestWFS: sql.Rows.Err error: %w", err)
 	}
-	return result
+	return result, nil
 }
 
-func (sm SampleModel) UpdateWFS(currentUser string, toUpdate []weekdayForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	if testEmpty(toUpdate, weekdayForSchedule{}) {
-		log.Fatal("Update WeekdaysForSchedule failed because one of the values in toUpdate had an empty/default values weekdayForSchedule struct")
+func (sm SampleModel) UpdateWFS(currentUser string, toUpdate []weekdayForSchedule) error { // figure out what to return as a completed/failed value, instead of just crashing the program
+	if check, failed := testEmpty(toUpdate, weekdayForSchedule{}); check {
+		return fmt.Errorf("error in UpdateWFS: method failed because one of the values in toUpdate had an empty/default values weekdayForSchedule struct: %+v", failed)
 	}
 	head := `update WeekdaysForSchedule set`
 	tail := fmt.Sprintf(`where User="%s" and WFSID=?`, currentUser)
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatalf("Error in Update WeekdaysForSchedule begin tx: %v", err)
+		return fmt.Errorf("error in UpdateWFS: sql.DB.Begin error: %w", err)
 	}
+	defer tx.Rollback()
 	for _, val := range toUpdate {
 		if val.WFSID == 0 {
-			log.Fatal("Update WeekdaysForSchedule failed because one of the values in toUpdate had an empty/default value for WFSID")
+			return fmt.Errorf("error in UpdateWFS: method failed because one of the values in toUpdate had an empty/default value for WFSID: %+v", val)
 		}
+		currentWFS, err := sm.RequestWFSSingle(currentUser, weekdayForSchedule{WFSID: val.WFSID})
+		if err != nil {
+			return fmt.Errorf("error in UpdateWFS: %w", err)
+		}
+		currentWFS.WFSID = 0
 		updateWFSString := head
 		count := countGTZero([]int{val.WFSID, len(val.User), len(val.Weekday), val.Schedule})
 		count-- // This is needed because a WFSID has been provided (verified at the start of this loop).
 		if count == 0 {
-			log.Fatal("Update WeekdaysForSchedule failed because only one value was provided in a weekdayForSchedule struct. At least two values (a WFSID and a value to update) must be provided")
+			return fmt.Errorf("error in UpdateWFS: method failed because only one value was provided in a weekdayForSchedule struct. At least two values (a WFSID and a value to update) must be provided: %+v", val)
 		}
 		// count is at least 1
 		//fmt.Println(count)
@@ -974,6 +1148,7 @@ func (sm SampleModel) UpdateWFS(currentUser string, toUpdate []weekdayForSchedul
 		if len(val.Weekday) > 0 {
 			updateWFSString = fmt.Sprintf(`%s Weekday="%s"`, updateWFSString, val.Weekday)
 			count--
+			currentWFS.Weekday = val.Weekday
 			if count > 0 {
 				updateWFSString = fmt.Sprintf(`%s,`, updateWFSString)
 			}
@@ -984,65 +1159,81 @@ func (sm SampleModel) UpdateWFS(currentUser string, toUpdate []weekdayForSchedul
 			updateWFSString = fmt.Sprintf(`%s Schedule=%d`, updateWFSString, val.Schedule)
 			//fmt.Println(count)
 			//fmt.Println(updateWFSString)
+			currentWFS.Schedule = val.Schedule
 		}
 		updateWFSString = fmt.Sprintf(`%s %s`, updateWFSString, tail)
 		//fmt.Println(count)
 		//fmt.Println(updateWFSString)
+		if check, err := sm.RequestWFS(currentUser, []weekdayForSchedule{currentWFS}); err != nil {
+			return fmt.Errorf("error in UpdateWFS: %w", err)
+		} else if len(check) > 0 {
+			return fmt.Errorf("error in UpdateWFS: method failed because it would create a duplicate WFS: %+v", val)
+		}
 		updateSchedulesStmt, err := tx.Prepare(updateWFSString)
 		if err != nil {
-			log.Fatalf("Error in Update WeekdaysForSchedule stmt prepare: %v", err)
+			return fmt.Errorf("error in UpdateWFS: sql.Tx.Prepare error: %w", err)
 		}
 		defer updateSchedulesStmt.Close()
 		_, err = updateSchedulesStmt.Exec(val.WFSID)
 		if err != nil {
-			log.Fatalf("Error in Update WeekdaysForSchedule stmt exec: %v", err)
+			return fmt.Errorf("error in UpdateWFS: sql.Stmt.Exec error: %w", err)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Error in Update WeekdaysForSchedule tx commit: %v", err)
+		return fmt.Errorf("error in UpdateWFS sql.Tx.Commit: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) DeleteWFS(currentUser string, toDelete []weekdayForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+// Will delete WFS database entries that match the WFSID or that match the Weekday and Schedule provided in each WFS struct. If a WFSID > 0 is provided, the values for Weekday and Schedule are ignored for that WFS struct.
+func (sm SampleModel) DeleteWFS(currentUser string, toDelete []weekdayForSchedule) error { // figure out what to return as a completed/failed value, instead of just crashing the program
+	for _, val := range toDelete {
+		if val.WFSID < 1 && (len(val.Weekday) == 0 || val.Schedule < 1) {
+			return fmt.Errorf("error in DeleteWFS: method failed because one of the weekdayForSchedule structs did not have a value for WFSID or Weekday and Schedule: %+v", val)
+		}
+	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatalf("Error in Delete WeekdaysForSchedule begin tx: %v", err)
+		return fmt.Errorf("error in DeleteWFS: sql.DB.Begin error: %w", err)
 	}
-	deleteWFSStmt, err := tx.Prepare(fmt.Sprintf(`delete from WeekdaysForSchedule where User="%s" and ((Schedule=? and Weekday=?) or WFSID=?)`, currentUser))
-	if err != nil {
-		log.Fatalf("Error in Delete WeekdaysForSchedule stmt: %v", err)
-	}
-	defer deleteWFSStmt.Close()
+	defer tx.Rollback()
 	for _, val := range toDelete {
-		_, err = deleteWFSStmt.Exec(val.Schedule, val.Weekday, val.WFSID)
+		var deleteWFSString string
+		if val.WFSID > 0 {
+			deleteWFSString = fmt.Sprintf(`delete from WeekdaysForSchedule where User="%s" and WFSID=%d`, currentUser, val.WFSID)
+		} else {
+			deleteWFSString = fmt.Sprintf(`delete from WeekdaysForSchedule where User="%s" and Weekday="%s" and Schedule=%d`, currentUser, val.Weekday, val.Schedule)
+		}
+		_, err := tx.Exec(deleteWFSString)
 		if err != nil {
-			log.Fatalf("Error in Delete WeekdaysForSchedule loop: %v", err)
+			return fmt.Errorf("error in DeleteWFS: sql.Tx.Exec error: %w", err)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Error in Delete WeekdaysForSchedule tx commit: %v", err)
+		return fmt.Errorf("error in DeleteWFS: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) CleanOrphanedWFS(currentUser string, correctWFS []map[schedule][]date) { // Figure out what to return as a completed/failed value, instead of just crashing the program
-	// correctWFS is a slices of maps with schedule structs as keys and slices of dates containing weekday designations as values. If a WFS row is linked to a schedule, but doesn't have a matching weekday, delete that WFS row.
+// correctWFS is a slices of maps with schedule structs as keys and slices of weekday structs that define WeekdayName as values. If a WFS row is linked to a schedule, but doesn't have a matching weekday, delete that WFS row.
+func (sm SampleModel) CleanOrphanedWFS(currentUser string, correctWFS []map[schedule][]weekday) error { // Figure out what to return as a completed/failed value, instead of just crashing the program
 	var WFSToDelete []string
 	for _, scheduleWeekdaysPair := range correctWFS {
 		for key, value := range scheduleWeekdaysPair {
 			if key.ScheduleID == 0 {
-				log.Fatal("Clean Orphaned WFS failed because one of the provided schedule structs did not have a ScheduleID")
+				return fmt.Errorf("error in CleanOrphanedWFS: method failed because one of the provided schedule structs did not have a ScheduleID: %+v", key)
 			}
 			var weekdays []string
-			for _, dateStruct := range value {
-				if len(dateStruct.Weekday) < 6 { // smallest weekday name is 6 characters long.
-					log.Fatal("Clean Orphaned WFS failed because one of the provided date structs did not have a Weekday")
+			for _, weekdayStruct := range value {
+				if len(weekdayStruct.WeekdayName) < 6 { // smallest weekday name is 6 characters long.
+					return fmt.Errorf("error in CleanOrphanedWFS: method failed because one of the provided weekday structs did not have a WeekdayName: %+v", value)
 				}
-				weekdays = append(weekdays, dateStruct.Weekday)
+				weekdays = append(weekdays, weekdayStruct.WeekdayName)
 			}
-			check := sm.RequestWFS(currentUser, []weekdayForSchedule{{Schedule: key.ScheduleID}})
-			for _, wfs := range check {
+			wfsCheck, _ := sm.RequestWFS(currentUser, []weekdayForSchedule{{Schedule: key.ScheduleID}}) // catch error when updating this func
+			for _, wfs := range wfsCheck {
 				if !slices.Contains(weekdays, wfs.Weekday) {
 					WFSToDelete = append(WFSToDelete, strconv.Itoa(wfs.WFSID))
 					//fmt.Println(WFSToDelete)
@@ -1051,58 +1242,85 @@ func (sm SampleModel) CleanOrphanedWFS(currentUser string, correctWFS []map[sche
 		}
 		tx, err := sm.DB.Begin()
 		if err != nil {
-			log.Fatalf("Error in Clean Orphaned WFS begin tx: %v", err)
+			return fmt.Errorf("error in CleanOrphanedWFS: sql.DB.Begin error: %w", err)
 		}
+		defer tx.Rollback()
 		deleteWFSQuery := fmt.Sprintf(`delete from WeekdaysForSchedule where User = "%s" and WFSID in (%s)`, currentUser, CsvSlice(WFSToDelete, true))
 		//fmt.Println(deleteWFSQuery)
-		execInTx(tx, deleteWFSQuery)
+		_, err = tx.Exec(deleteWFSQuery)
+		if err != nil {
+			return fmt.Errorf("error in CleanOrphanedWFS: sql.Tx.Exec error: %w. Value of deleteWFSQuery is `%s`", err, deleteWFSQuery)
+		}
 		err = tx.Commit()
 		if err != nil {
-			log.Fatalf("Error in Clean Orphaned WFS tx commit: %v", err)
+			return fmt.Errorf("error in CleanOrphanedWFS: sql.Tx.Commit error: %w", err)
 		}
 	}
+	return nil
 }
 
-func (sm SampleModel) CreateVFS(currentUser string, toCreate []volunteerForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	check := sm.RequestVFS(currentUser, toCreate)
+func (sm SampleModel) CreateVFS(currentUser string, toCreate []volunteerForSchedule) error { // need to fail for empty input values like Schedule, but never for User
+	check, err := sm.RequestVFS(currentUser, toCreate)
+	if err != nil {
+		return fmt.Errorf("error in CreateVFS: %w", err)
+	}
 	if len(check) > 0 {
-		log.Fatalf("Create VFS failed because at least one of the volunteerForSchedule entries to be created already exists in the database.\nExisting volunteerForSchedule entry(s): %+v", check)
+		return fmt.Errorf("error in CreateVFS: method failed because at least one of the volunteerForSchedule entries to be created already exists in the database. Existing volunteerForSchedule entry(s): %+v", check)
+	}
+	checkDuplicates := []volunteerForSchedule{}
+	for _, val := range toCreate { // User and VFSID do not need to be provided in the volunteerForSchedule structs
+		if val.Schedule == (volunteerForSchedule{}.Schedule) {
+			return fmt.Errorf("error in CreateVFS: method failed because at least one of the volunteerForSchedule structs in toCreate did not have a value for Schedule: %+v", val)
+		}
+		if val.Volunteer == (volunteerForSchedule{}.Volunteer) {
+			return fmt.Errorf("error in CreateVFS: method failed because at least one of the volunteerForSchedule structs in toCreate did not have a value for Volunteer: %+v", val)
+		}
+		if !slices.Contains(checkDuplicates, volunteerForSchedule{Schedule: val.Schedule, Volunteer: val.Volunteer}) {
+			checkDuplicates = append(checkDuplicates, volunteerForSchedule{Schedule: val.Schedule, Volunteer: val.Volunteer})
+		} else {
+			return fmt.Errorf("error in CreateVFS: method failed because at least one of the volunteerForSchedule structs in toCreate was a duplicate of another volunteerForSchedule struct in toCreate: %+v", val)
+		}
 	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateVFS: sql.DB.Begin error: %w", err)
 	}
+	defer tx.Rollback()
 	fillVFSTableString := `insert into VolunteersForSchedule (User, Schedule, Volunteer) values (?, ?, ?)`
 	fillVFSTableStmt, err := tx.Prepare(fillVFSTableString)
 	if err != nil {
-		log.Fatalf("Error in Create VFS statement: %v\n%s", err, fillVFSTableString)
+		return fmt.Errorf("error in CreateVFS: sql.Tx.Prepare error: %w. Value of fillVFSTableString is `%s`", err, fillVFSTableString)
 	}
 	defer fillVFSTableStmt.Close()
 	for i := 0; i < len(toCreate); i++ {
 		_, err = fillVFSTableStmt.Exec(currentUser, toCreate[i].Schedule, toCreate[i].Volunteer)
 		if err != nil {
-			log.Fatalf("Error in Create VFS loop: %v", err)
+			return fmt.Errorf("error in CreateVFS: sql.Stmt.Exec error: %w. Value of toCreate[i] is `%+v`", err, toCreate[i])
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error in CreateVFS: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) RequestVFSSingle(currentUser string, volunteerForScheduleStruct volunteerForSchedule) volunteerForSchedule {
-	volunteersForSchedule := sm.RequestVFS(currentUser, []volunteerForSchedule{volunteerForScheduleStruct})
+func (sm SampleModel) RequestVFSSingle(currentUser string, volunteerForScheduleStruct volunteerForSchedule) (volunteerForSchedule, error) {
+	volunteersForSchedule, err := sm.RequestVFS(currentUser, []volunteerForSchedule{volunteerForScheduleStruct})
+	if err != nil {
+		return volunteerForSchedule{}, fmt.Errorf("error in RequestVFSSingle: %w", err)
+	}
 	if len(volunteersForSchedule) != 1 {
-		log.Fatalf("Failed to locate exactly one VFS matching %+v.\nFound %d matches.", volunteerForScheduleStruct, len(volunteersForSchedule))
+		return volunteerForSchedule{}, fmt.Errorf("error in RequestVFSSingle: method failed to locate exactly one VFS matching %+v. Found %d matches", volunteerForScheduleStruct, len(volunteersForSchedule))
 	}
-	return volunteersForSchedule[0]
+	return volunteersForSchedule[0], nil
 }
 
-func (sm SampleModel) RequestVFS(currentUser string, volunteersForSchedule []volunteerForSchedule) []volunteerForSchedule {
+func (sm SampleModel) RequestVFS(currentUser string, volunteersForSchedule []volunteerForSchedule) ([]volunteerForSchedule, error) {
 	VFSQuery := fmt.Sprintf(`select * from VolunteersForSchedule where User = "%s"`, currentUser)
 	if len(volunteersForSchedule) > 0 {
-		if testEmpty(volunteersForSchedule, volunteerForSchedule{}) {
-			log.Fatal("RequestVFS failed because one of the values in volunteersForSchedule had an empty/default values volunteerForSchedule struct")
+		if check, failed := testEmpty(volunteersForSchedule, volunteerForSchedule{}); check {
+			return []volunteerForSchedule{}, fmt.Errorf("error in RequestVFS: method failed because one of the values in volunteersForSchedule had an empty/default values volunteerForSchedule struct: %+v", failed)
 		}
 		VFSQuery = fmt.Sprintf(`%s and (`, VFSQuery)
 	}
@@ -1147,43 +1365,49 @@ func (sm SampleModel) RequestVFS(currentUser string, volunteersForSchedule []vol
 	var result []volunteerForSchedule
 	rows, err := sm.DB.Query(VFSQuery)
 	if err != nil {
-		log.Fatalf("Error in Request VFS query: %v\n%s", err, VFSQuery)
+		return []volunteerForSchedule{}, fmt.Errorf("error in RequestVFS: sql.DB.Query error: %w. Value of VFSQuery is `%s`", err, VFSQuery)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var VFSStruct volunteerForSchedule
 		err = rows.Scan(&VFSStruct.VFSID, &VFSStruct.User, &VFSStruct.Schedule, &VFSStruct.Volunteer)
 		if err != nil {
-			log.Fatalf("Error in Request VFS loop: %v", err)
+			return []volunteerForSchedule{}, fmt.Errorf("error in RequestVFS: sql.Rows.Scan error: %w. Value of VFSStruct is `%+v`", err, VFSStruct)
 		}
 		result = append(result, VFSStruct)
 	}
 	err = rows.Err()
 	if err != nil {
-		log.Fatalf("Error in Request VFS rows.Err(): %v", err)
+		return []volunteerForSchedule{}, fmt.Errorf("error in RequestVFS: sql.Rows.Err error: %w", err)
 	}
-	return result
+	return result, nil
 }
 
-func (sm SampleModel) UpdateVFS(currentUser string, toUpdate []volunteerForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	if testEmpty(toUpdate, volunteerForSchedule{}) {
-		log.Fatal("Update VolunteersForSchedule failed because one of the values in toUpdate had an empty/default values volunteerForSchedule struct")
+func (sm SampleModel) UpdateVFS(currentUser string, toUpdate []volunteerForSchedule) error { // figure out what to return as a completed/failed value, instead of just crashing the program
+	if check, failed := testEmpty(toUpdate, volunteerForSchedule{}); check {
+		return fmt.Errorf("error in UpdateVFS: method failed because one of the values in toUpdate had an empty/default values volunteerForSchedule struct: %+v", failed)
 	}
 	head := `update VolunteersForSchedule set`
 	tail := fmt.Sprintf(`where User="%s" and VFSID=?`, currentUser)
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatalf("Error in Update VolunteersForSchedule begin tx: %v", err)
+		return fmt.Errorf("error in UpdateVFS: sql.DB.Begin error: %w", err)
 	}
+	defer tx.Rollback()
 	for _, val := range toUpdate {
 		if val.VFSID == 0 {
-			log.Fatal("Update VolunteersForSchedule failed because one of the values in toUpdate had an empty/default value for VFSID")
+			return fmt.Errorf("error in UpdateVFS: method failed because one of the values in toUpdate had an empty/default value for VFSID: %+v", val)
 		}
+		currentVFS, err := sm.RequestVFSSingle(currentUser, volunteerForSchedule{VFSID: val.VFSID})
+		if err != nil {
+			return fmt.Errorf("error in UpdateWFS: %w", err)
+		}
+		currentVFS.VFSID = 0
 		updateVFSString := head
 		count := countGTZero([]int{val.VFSID, len(val.User), val.Schedule, val.Volunteer})
 		count-- // This is needed because a VFSID has been provided (verified at the start of this loop).
 		if count == 0 {
-			log.Fatal("Update VolunteersForSchedule failed because only one value was provided in a volunteerForSchedule struct. At least two values (a VFSID and a value to update) must be provided")
+			return fmt.Errorf("error in UpdateVFS: method failed because only one value was provided in a volunteerForSchedule struct. At least two values (a VFSID and a value to update) must be provided: %+v", val)
 		}
 		// count is at least 1
 		//fmt.Println(count)
@@ -1191,6 +1415,7 @@ func (sm SampleModel) UpdateVFS(currentUser string, toUpdate []volunteerForSched
 		if val.Schedule > 0 {
 			updateVFSString = fmt.Sprintf(`%s Schedule=%d`, updateVFSString, val.Schedule)
 			count--
+			currentVFS.Schedule = val.Schedule
 			if count > 0 {
 				updateVFSString = fmt.Sprintf(`%s,`, updateVFSString)
 			}
@@ -1201,66 +1426,89 @@ func (sm SampleModel) UpdateVFS(currentUser string, toUpdate []volunteerForSched
 			updateVFSString = fmt.Sprintf(`%s Volunteer=%d`, updateVFSString, val.Volunteer)
 			//fmt.Println(count)
 			//fmt.Println(updateVFSString)
+			currentVFS.Volunteer = val.Volunteer
 		}
 		updateVFSString = fmt.Sprintf(`%s %s`, updateVFSString, tail)
 		//fmt.Println(count)
 		//fmt.Println(updateVFSString)
+		if check, err := sm.RequestVFS(currentUser, []volunteerForSchedule{currentVFS}); err != nil {
+			return fmt.Errorf("error in UpdateVFS: %w", err)
+		} else if len(check) > 0 {
+			return fmt.Errorf("error in UpdateVFS: method failed because it would create a duplicate VFS: %+v", val)
+		}
 		updateSchedulesStmt, err := tx.Prepare(updateVFSString)
 		if err != nil {
-			log.Fatalf("Error in Update VolunteersForSchedule stmt prepare: %v", err)
+			return fmt.Errorf("error in UpdateVFS: sql.Tx.Prepare error: %w. Value of updateVFSString is `%s`", err, updateVFSString)
 		}
 		defer updateSchedulesStmt.Close()
 		_, err = updateSchedulesStmt.Exec(val.VFSID)
 		if err != nil {
-			log.Fatalf("Error in Update VolunteersForSchedule stmt exec: %v", err)
+			return fmt.Errorf("error in UpdateVFS: sql.Stmt.Exec error: %w. Value of val is `%+v`", err, val)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Error in Update VolunteersForSchedule tx commit: %v", err)
+		return fmt.Errorf("error in UpdateVFS: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) DeleteVFS(currentUser string, toDelete []volunteerForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+// Will delete VFS database entries that match the VFSID or that match the Schedule and Volunteer provided in each VFS struct. If a VFSID > 0 is provided, the values for Schedule and Volunteer are ignored for that VFS struct.
+func (sm SampleModel) DeleteVFS(currentUser string, toDelete []volunteerForSchedule) error { // figure out what to return as a completed/failed value, instead of just crashing the program
+	for _, val := range toDelete {
+		if val.VFSID < 1 && (val.Schedule == 0 || val.Volunteer < 1) {
+			return fmt.Errorf("error in DeleteVFS: method failed because one of the volunteerForSchedule structs did not have a value for VFSID or Schedule and Volunteer: %+v", val)
+		}
+	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
-		log.Fatalf("Error in Delete VolunteersForSchedule begin tx: %v", err)
+		return fmt.Errorf("error in DeleteVFS: sql.DB.Begin error: %w", err)
 	}
-	deleteVFSStmt, err := tx.Prepare(fmt.Sprintf(`delete from VolunteersForSchedule where User="%s" and ((Schedule=? and Volunteer=?) or VFSID=?)`, currentUser))
-	if err != nil {
-		log.Fatalf("Error in Delete VolunteersForSchedule stmt: %v", err)
-	}
-	defer deleteVFSStmt.Close()
+	defer tx.Rollback()
 	for _, val := range toDelete {
-		_, err = deleteVFSStmt.Exec(val.Schedule, val.Volunteer, val.VFSID)
+		var deleteVFSString string
+		if val.VFSID > 0 {
+			deleteVFSString = fmt.Sprintf(`delete from VolunteersForSchedule where User="%s" and VFSID=%d`, currentUser, val.VFSID)
+		} else {
+			deleteVFSString = fmt.Sprintf(`delete from VolunteersForSchedule where User="%s" and Schedule=%d and Volunteer=%d`, currentUser, val.Schedule, val.Volunteer)
+		}
+		_, err := tx.Exec(deleteVFSString)
 		if err != nil {
-			log.Fatalf("Error in Delete VolunteersForSchedule loop: %v", err)
+			return fmt.Errorf("error in DeleteVFS: sql.Tx.Exec error: %w. Value of deleteVFSString is `%s`", err, deleteVFSString)
 		}
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Error in Delete VolunteersForSchedule tx commit: %v", err)
+		return fmt.Errorf("error in DeleteVFS: sql.Tx.Commit error: %w", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) CleanOrphanedVFS(currentUser string, correctVFS []map[schedule][]volunteer) { // Figure out what to return as a completed/failed value, instead of just crashing the program
-	// correctVFS is a slices of maps with schedule structs as keys and slices of volunteers containing VolunteerNames as values. If a WFS row is linked to a schedule, but doesn't have a matching weekday, delete that WFS row.
+// correctVFS is a slices of maps with schedule structs as keys and slices of volunteers containing VolunteerNames as values. If a VFS row is linked to a schedule, but doesn't have a matching volunteer, delete that VFS row.
+func (sm SampleModel) CleanOrphanedVFS(currentUser string, correctVFS []map[schedule][]volunteer) error { // Figure out what to return as a completed/failed value, instead of just crashing the program
 	var VFSToDelete []string
 	for _, scheduleVolunteersPair := range correctVFS {
 		for key, value := range scheduleVolunteersPair {
 			if key.ScheduleID == 0 {
-				log.Fatal("Clean Orphaned VFS failed because one of the provided schedule structs did not have a ScheduleID")
+				return fmt.Errorf("error in CleanOrphanedVFS: method failed because one of the provided schedule structs did not have a ScheduleID: %+v", value)
 			}
 			var volunteers []string
 			for _, volunteerStruct := range value {
 				if len(volunteerStruct.VolunteerName) < 1 {
-					log.Fatal("Clean Orphaned VFS failed because one of the provided volunteer structs did not have a VolunteerName")
+					return fmt.Errorf("error in CleanOrphanedVFS: method failed because one of the provided volunteer structs did not have a VolunteerName: %+v", value)
 				}
 				volunteers = append(volunteers, volunteerStruct.VolunteerName)
 			}
-			check := sm.RequestVFS(currentUser, []volunteerForSchedule{{Schedule: key.ScheduleID}})
-			for _, vfs := range check {
-				if !slices.Contains(volunteers, sm.RequestVolunteer(currentUser, volunteer{VolunteerID: vfs.Volunteer}).VolunteerName) {
+			vfsCheck, err := sm.RequestVFS(currentUser, []volunteerForSchedule{{Schedule: key.ScheduleID}})
+			if err != nil {
+				return fmt.Errorf("error in CleanOrphanedVFS: %w", err)
+			}
+			for _, vfs := range vfsCheck {
+				nameCheck, err := sm.RequestVolunteer(currentUser, volunteer{VolunteerID: vfs.Volunteer})
+				if err != nil {
+					return fmt.Errorf("error in CleanOrphanedVFS: %w", err)
+				}
+				if !slices.Contains(volunteers, nameCheck.VolunteerName) {
 					VFSToDelete = append(VFSToDelete, strconv.Itoa(vfs.VFSID))
 					//fmt.Println(VFSToDelete)
 				}
@@ -1268,27 +1516,44 @@ func (sm SampleModel) CleanOrphanedVFS(currentUser string, correctVFS []map[sche
 		}
 		tx, err := sm.DB.Begin()
 		if err != nil {
-			log.Fatalf("Error in Clean Orphaned VFS begin tx: %v", err)
+			return fmt.Errorf("error in CleanOrphanedVFS: sql.DB.begin error: %w", err)
 		}
+		defer tx.Rollback()
 		deleteVFSQuery := fmt.Sprintf(`delete from VolunteersForSchedule where User = "%s" and VFSID in (%s)`, currentUser, CsvSlice(VFSToDelete, true))
 		//fmt.Println(deleteVFSQuery)
-		execInTx(tx, deleteVFSQuery)
+		_, err = tx.Exec(deleteVFSQuery)
+		if err != nil {
+			return fmt.Errorf("error in CleanOrphanedVFS: sql.Tx.Exec error: %w. Value of deleteVFSQuery is `%s`", err, deleteVFSQuery)
+		}
 		err = tx.Commit()
 		if err != nil {
-			log.Fatalf("Error in Clean Orphaned VFS tx commit: %v", err)
+			return fmt.Errorf("error in CleanOrphanedVFS: sql.Tx.Commit error: %w", err)
 		}
 	}
+	return nil
 }
 
-func (sm SampleModel) CreateUFS(currentUser string, toCreate []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	check := sm.RequestUFS(currentUser, toCreate)
+func (sm SampleModel) CreateUFS(currentUser string, toCreate []unavailabilityForSchedule) error { // // need to fail for empty input values like Date, but never for User
+	check, err := sm.RequestUFS(currentUser, toCreate)
+	if err != nil {
+		fmt.Errorf("error in CreateUFS: %w", err)
+	}
 	if len(check) > 0 {
 		log.Fatalf("Create UFS failed because at least one of the unavailabilityForSchedule entries to be created already exists in the database.\nExisting unavailabilityForSchedule entry(s): %+v", check)
+	}
+	for _, val := range toCreate { // User and UFSID do not need to be provided in the unavailabilityForSchedule structs
+		if val.VolunteerForSchedule == (unavailabilityForSchedule{}.VolunteerForSchedule) {
+			return fmt.Errorf("error in CreateUFS: method failed because at least one of the unavailabilityForSchedule structs in toCreate did not have a value for VolunteerForSchedule: %+v", val)
+		}
+		if val.Date == (unavailabilityForSchedule{}.Date) {
+			return fmt.Errorf("error in CreateUFS: method failed because at least one of the unavailabilityForSchedule structs in toCreate did not have a value for Date: %+v", val)
+		}
 	}
 	tx, err := sm.DB.Begin()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer tx.Rollback()
 	fillUFSTableString := `insert into UnavailabilitiesForSchedule (User, VolunteerForSchedule, Date) values (?, ?, ?)`
 	fillUFSTableStmt, err := tx.Prepare(fillUFSTableString)
 	if err != nil {
@@ -1305,21 +1570,25 @@ func (sm SampleModel) CreateUFS(currentUser string, toCreate []unavailabilityFor
 	if err != nil {
 		log.Fatal(err)
 	}
+	return nil
 }
 
-func (sm SampleModel) RequestUFSSingle(currentUser string, unavailabilityForScheduleStruct unavailabilityForSchedule) unavailabilityForSchedule {
-	unavailabilitiesForSchedule := sm.RequestUFS(currentUser, []unavailabilityForSchedule{unavailabilityForScheduleStruct})
+func (sm SampleModel) RequestUFSSingle(currentUser string, unavailabilityForScheduleStruct unavailabilityForSchedule) (unavailabilityForSchedule, error) {
+	unavailabilitiesForSchedule, err := sm.RequestUFS(currentUser, []unavailabilityForSchedule{unavailabilityForScheduleStruct})
+	if err != nil {
+		fmt.Errorf("error in RequestUFSSingle: %w", err)
+	}
 	if len(unavailabilitiesForSchedule) != 1 {
 		log.Fatalf("Failed to locate exactly one UFS matching %+v.\nFound %d matches.", unavailabilityForScheduleStruct, len(unavailabilitiesForSchedule))
 	}
-	return unavailabilitiesForSchedule[0]
+	return unavailabilitiesForSchedule[0], nil
 }
 
-func (sm SampleModel) RequestUFS(currentUser string, unavailabilitiesForSchedule []unavailabilityForSchedule) []unavailabilityForSchedule {
+func (sm SampleModel) RequestUFS(currentUser string, unavailabilitiesForSchedule []unavailabilityForSchedule) ([]unavailabilityForSchedule, error) {
 	UFSQuery := fmt.Sprintf(`select * from UnavailabilitiesForSchedule where User = "%s"`, currentUser)
 	if len(unavailabilitiesForSchedule) > 0 {
-		if testEmpty(unavailabilitiesForSchedule, unavailabilityForSchedule{}) {
-			log.Fatal("RequestUFS failed because one of the values in unavailabilitiesForSchedule had an empty/default values unavailabilityForSchedule struct")
+		if check, failed := testEmpty(unavailabilitiesForSchedule, unavailabilityForSchedule{}); check {
+			log.Fatalf("RequestUFS failed because one of the values in unavailabilitiesForSchedule had an empty/default values unavailabilityForSchedule struct: %+v", failed)
 		}
 		UFSQuery = fmt.Sprintf(`%s and (`, UFSQuery)
 	}
@@ -1381,12 +1650,12 @@ func (sm SampleModel) RequestUFS(currentUser string, unavailabilitiesForSchedule
 	if err != nil {
 		log.Fatalf("Error in Request UFS rows.Err(): %v", err)
 	}
-	return result
+	return result, nil
 }
 
-func (sm SampleModel) UpdateUFS(currentUser string, toUpdate []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	if testEmpty(toUpdate, unavailabilityForSchedule{}) {
-		log.Fatal("Update UnavailabilitiesForSchedule failed because one of the values in toUpdate had an empty/default values unavailabilityForSchedule struct")
+func (sm SampleModel) UpdateUFS(currentUser string, toUpdate []unavailabilityForSchedule) error { // figure out what to return as a completed/failed value, instead of just crashing the program
+	if check, failed := testEmpty(toUpdate, unavailabilityForSchedule{}); check {
+		log.Fatalf("Update UnavailabilitiesForSchedule failed because one of the values in toUpdate had an empty/default values unavailabilityForSchedule struct: %+v", failed)
 	}
 	head := `update UnavailabilitiesForSchedule set`
 	tail := fmt.Sprintf(`where User="%s" and UFSID=?`, currentUser)
@@ -1394,10 +1663,16 @@ func (sm SampleModel) UpdateUFS(currentUser string, toUpdate []unavailabilityFor
 	if err != nil {
 		log.Fatalf("Error in Update UnavailabilitiesForSchedule begin tx: %v", err)
 	}
+	defer tx.Rollback()
 	for _, val := range toUpdate {
 		if val.UFSID == 0 {
 			log.Fatal("Update UnavailabilitiesForSchedule failed because one of the values in toUpdate had an empty/default value for UFSID")
 		}
+		currentUFS, err := sm.RequestUFSSingle(currentUser, unavailabilityForSchedule{UFSID: val.UFSID})
+		if err != nil {
+			return fmt.Errorf("error in UpdateVFS: %w", err)
+		}
+		currentUFS.UFSID = 0
 		updateUFSString := head
 		count := countGTZero([]int{val.UFSID, len(val.User), val.VolunteerForSchedule, val.Date})
 		count-- // This is needed because a UFSID has been provided (verified at the start of this loop).
@@ -1405,25 +1680,32 @@ func (sm SampleModel) UpdateUFS(currentUser string, toUpdate []unavailabilityFor
 			log.Fatal("Update UnavailabilitiesForSchedule failed because only one value was provided in an unavailabilityForSchedule struct. At least two values (a UFSID and a value to update) must be provided")
 		}
 		// count is at least 1
-		fmt.Println(count)
-		fmt.Println(updateUFSString)
+		//fmt.Println(count)
+		//fmt.Println(updateUFSString)
 		if val.VolunteerForSchedule > 0 {
 			updateUFSString = fmt.Sprintf(`%s VolunteerForSchedule=%d`, updateUFSString, val.VolunteerForSchedule)
 			count--
+			currentUFS.VolunteerForSchedule = val.VolunteerForSchedule
 			if count > 0 {
 				updateUFSString = fmt.Sprintf(`%s,`, updateUFSString)
 			}
-			fmt.Println(count)
-			fmt.Println(updateUFSString)
+			//fmt.Println(count)
+			//fmt.Println(updateUFSString)
 		}
 		if val.Date > 0 {
 			updateUFSString = fmt.Sprintf(`%s Date=%d`, updateUFSString, val.Date)
-			fmt.Println(count)
-			fmt.Println(updateUFSString)
+			//fmt.Println(count)
+			//fmt.Println(updateUFSString)
+			currentUFS.Date = val.Date
 		}
 		updateUFSString = fmt.Sprintf(`%s %s`, updateUFSString, tail)
-		fmt.Println(count)
-		fmt.Println(updateUFSString)
+		//fmt.Println(count)
+		//fmt.Println(updateUFSString)
+		if check, err := sm.RequestUFS(currentUser, []unavailabilityForSchedule{currentUFS}); err != nil {
+			return fmt.Errorf("error in UpdateUFS: %w", err)
+		} else if len(check) > 0 {
+			return fmt.Errorf("error in UpdateUFS: method failed because it would create a duplicate UFS: %+v", val)
+		}
 		updateSchedulesStmt, err := tx.Prepare(updateUFSString)
 		if err != nil {
 			log.Fatalf("Error in Update UnavailabilitiesForSchedule stmt prepare: %v", err)
@@ -1438,14 +1720,76 @@ func (sm SampleModel) UpdateUFS(currentUser string, toUpdate []unavailabilityFor
 	if err != nil {
 		log.Fatalf("Error in Update UnavailabilitiesForSchedule tx commit: %v", err)
 	}
+	return nil
 }
 
-func (sm SampleModel) DeleteUFS(currentUser string, existingUnavailabilitiesForSchedule []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in
+// Will delete UFS database entries that match the UFSID or that match the VFS and Date provided in each UFS struct. If a UFSID > 0 is provided, the values for VFS and Date are ignored for that UFS struct.
+func (sm SampleModel) DeleteUFS(currentUser string, toDelete []unavailabilityForSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		log.Fatalf("Error in Delete UnavailabilitiesForSchedule begin tx: %v", err)
+	}
+	defer tx.Rollback()
+	for _, val := range toDelete {
+		var deleteUFSString string
+		if val.UFSID > 0 {
+			deleteUFSString = fmt.Sprintf(`delete from UnavailabilitiesForSchedule where User="%s" and UFSID=%d`, currentUser, val.UFSID)
+		} else {
+			deleteUFSString = fmt.Sprintf(`delete from UnavailabilitiesForSchedule where User="%s" and VolunteerForSchedule=%d and Date=%d`, currentUser, val.VolunteerForSchedule, val.Date)
+		}
+		_, err := tx.Exec(deleteUFSString)
+		if err != nil {
+			log.Fatalf("Error in Delete UnavailabilitiesForSchedule loop: %v", err)
+		}
+	}
+	err = tx.Commit()
+	if err != nil {
+		log.Fatalf("Error in Delete UnavailabilitiesForSchedule tx commit: %v", err)
+	}
 }
 
-func (sm SampleModel) CleanOrphanedUFS(currentUser string, currentSchedule string, currentVolunteer string, currentUnavailabilities []string) { // Need to delete all related UFS when deleting a VFS. If there is a volunteer with no VFS's, delete the volunteer (I think). Figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in. Must be done per volunteer. If it's not in currentUnavailabilities but has the same UserName, ScheduleName, and VolunteerName, delete it. I shouldn't need to put any sql in here. I should use the CRUD functions.
+func (sm SampleModel) CleanOrphanedUFS(currentUser string, correctUFS []map[volunteerForSchedule][]date) { // Need to delete all related UFS when deleting a VFS. If there is a volunteer with no VFS's, delete the volunteer (I think). Figure out what to return as a completed/failed value, instead of just crashing the program
+	// correctUFS is a slices of maps with VFS structs as keys and slices of dates containing DateIDs as values. If a UFS row is linked to a VFS, but doesn't have a matching date, delete that VFS row.
+	var UFSToDelete []string
+	for _, VFSDatesPair := range correctUFS {
+		for key, value := range VFSDatesPair {
+			if key.VFSID == 0 {
+				log.Fatal("Clean Orphaned UFS failed because one of the provided volunteerForSchedule structs did not have a VFSID")
+			}
+			var dates []int
+			for _, dateStruct := range value {
+				if dateStruct.DateID < 1 {
+					log.Fatal("Clean Orphaned UFS failed because one of the provided date structs did not have a DateID")
+				}
+				dates = append(dates, dateStruct.DateID)
+			}
+			ufsCheck, err := sm.RequestUFS(currentUser, []unavailabilityForSchedule{{VolunteerForSchedule: key.VFSID}})
+			if err != nil {
+				fmt.Errorf("error in CleanOrphanedUFS: %w", err)
+			}
+			for _, ufs := range ufsCheck {
+				if !slices.Contains(dates, ufs.Date) {
+					UFSToDelete = append(UFSToDelete, strconv.Itoa(ufs.UFSID))
+					//fmt.Println(UFSToDelete)
+				}
+			}
+		}
+		tx, err := sm.DB.Begin()
+		if err != nil {
+			log.Fatalf("Error in Clean Orphaned UFS begin tx: %v", err)
+		}
+		defer tx.Rollback()
+		deleteUFSQuery := fmt.Sprintf(`delete from UnavailabilitiesForSchedule where User = "%s" and UFSID in (%s)`, currentUser, CsvSlice(UFSToDelete, true))
+		//fmt.Println(deleteUFSQuery)
+		_, err = tx.Exec(deleteUFSQuery)
+		if err != nil {
+			log.Fatalf("Error in Clean Orphaned UFS tx commit: %v", err)
+		}
+		err = tx.Commit()
+		if err != nil {
+			log.Fatalf("Error in Clean Orphaned UFS tx commit: %v", err)
+		}
+	}
 }
 
 func (sm SampleModel) CreateCompletedSchedule(currentUser string, toCreate completedSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
@@ -1476,6 +1820,8 @@ What Delete options are needed?
 	Delete Completed Schedule should delete a single row on CompletedSchedules
 
 This does not contemplate CRUDing users yet.
+
+Do I need to make sure Update functions don't create duplicate rows?
 */
 
 func main() {
@@ -1493,31 +1839,33 @@ func main() {
 	}
 	defer env.sample.DB.Close()
 	if !dbExists {
-		env.sample.CreateDatabase()
+		if err = env.sample.CreateDatabase(); err != nil {
+			log.Fatalf("Crashed in main() with error: %v", err)
+		}
 	}
 	schedules := []schedule{
 		{
 			ScheduleName:       "test1",
 			ShiftsOff:          3,
 			VolunteersPerShift: 3,
-			StartDate:          env.sample.RequestDate(date{Month: 1, Day: 1, Year: 2024}).DateID,
-			EndDate:            env.sample.RequestDate(date{Month: 3, Day: 1, Year: 2024}).DateID,
+			StartDate:          Must(env.sample.RequestDate(date{Month: 1, Day: 1, Year: 2024})).DateID,
+			EndDate:            Must(env.sample.RequestDate(date{Month: 3, Day: 1, Year: 2024})).DateID,
 			User:               env.loggedInUser,
 		},
 		{
 			ScheduleName:       "test2",
 			ShiftsOff:          3,
 			VolunteersPerShift: 3,
-			StartDate:          env.sample.RequestDate(date{Month: 3, Day: 1, Year: 2024}).DateID,
-			EndDate:            env.sample.RequestDate(date{Month: 6, Day: 1, Year: 2024}).DateID,
+			StartDate:          Must(env.sample.RequestDate(date{Month: 3, Day: 1, Year: 2024})).DateID,
+			EndDate:            Must(env.sample.RequestDate(date{Month: 6, Day: 1, Year: 2024})).DateID,
 			User:               env.loggedInUser,
 		},
 		{
 			ScheduleName:       "test3",
 			ShiftsOff:          3,
 			VolunteersPerShift: 3,
-			StartDate:          env.sample.RequestDate(date{Month: 6, Day: 1, Year: 2024}).DateID,
-			EndDate:            env.sample.RequestDate(date{Month: 9, Day: 1, Year: 2024}).DateID,
+			StartDate:          Must(env.sample.RequestDate(date{Month: 6, Day: 1, Year: 2024})).DateID,
+			EndDate:            Must(env.sample.RequestDate(date{Month: 9, Day: 1, Year: 2024})).DateID,
 			User:               env.loggedInUser,
 		},
 	}
@@ -1525,18 +1873,18 @@ func main() {
 	weekdaysForSchedule := []weekdayForSchedule{
 		{
 			User:     env.loggedInUser,
-			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}).WeekdayName,
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
+			Weekday:  Must(env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"})).WeekdayName,
+			Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
 		},
 		{
 			User:     env.loggedInUser,
-			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Wednesday"}).WeekdayName,
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
+			Weekday:  Must(env.sample.RequestWeekday(weekday{WeekdayName: "Wednesday"})).WeekdayName,
+			Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
 		},
 		{
 			User:     env.loggedInUser,
-			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Friday"}).WeekdayName,
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
+			Weekday:  Must(env.sample.RequestWeekday(weekday{WeekdayName: "Friday"})).WeekdayName,
+			Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
 		},
 	}
 	env.sample.CreateWFS(env.loggedInUser, weekdaysForSchedule)
@@ -1574,127 +1922,127 @@ func main() {
 	volunteersForSchedule := []volunteerForSchedule{
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"})).VolunteerID,
 		},
 		{
 			User:      env.loggedInUser,
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"})).VolunteerID,
 		},
 	}
 	env.sample.CreateVFS(env.loggedInUser, volunteersForSchedule)
 	unavailabilitiesForSchedule := []unavailabilityForSchedule{
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
-			}).VFSID,
-			Date: env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024}).DateID,
+			VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"})).VolunteerID,
+			})).VFSID,
+			Date: Must(env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024})).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"}).VolunteerID,
-			}).VFSID,
-			Date: env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024}).DateID,
+			VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID,
+			})).VFSID,
+			Date: Must(env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024})).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}).VolunteerID,
-			}).VFSID,
-			Date: env.sample.RequestDate(date{Month: 5, Day: 12, Year: 2024}).DateID,
+			VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"})).VolunteerID,
+			})).VFSID,
+			Date: Must(env.sample.RequestDate(date{Month: 5, Day: 12, Year: 2024})).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"}).VolunteerID,
-			}).VFSID,
-			Date: env.sample.RequestDate(date{Month: 5, Day: 19, Year: 2024}).DateID,
+			VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"})).VolunteerID,
+			})).VFSID,
+			Date: Must(env.sample.RequestDate(date{Month: 5, Day: 19, Year: 2024})).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"}).VolunteerID,
-			}).VFSID,
-			Date: env.sample.RequestDate(date{Month: 8, Day: 11, Year: 2024}).DateID,
+			VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"})).VolunteerID,
+			})).VFSID,
+			Date: Must(env.sample.RequestDate(date{Month: 8, Day: 11, Year: 2024})).DateID,
 		},
 		{
 			User: env.loggedInUser,
-			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"}).VolunteerID,
-			}).VFSID,
-			Date: env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024}).DateID,
+			VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"})).VolunteerID,
+			})).VFSID,
+			Date: Must(env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024})).DateID,
 		},
 	}
 	env.sample.CreateUFS(env.loggedInUser, unavailabilitiesForSchedule)
-	/*fmt.Println(env.sample.RequestWFS(env.loggedInUser, []weekdayForSchedule{ //
+	fmt.Println(env.sample.RequestWFS(env.loggedInUser, []weekdayForSchedule{ // /*
 		{
-			Weekday: env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024}).Weekday,
+			Weekday: Must(env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024})).Weekday,
 		},
 		{
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
+			Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
 		},
 		{
-			Weekday: env.sample.RequestWeekday(weekday{WeekdayName: "Friday"}).WeekdayName,
+			Weekday: Must(env.sample.RequestWeekday(weekday{WeekdayName: "Friday"})).WeekdayName,
 		},
 	}))
 	fmt.Println(env.sample.RequestSchedules(env.loggedInUser, []schedule{
 		{ScheduleName: "test1",
 			ShiftsOff: 3},
-		{StartDate: env.sample.RequestDate(date{Month: 1, Day: 1, Year: 2024}).DateID,
+		{StartDate: Must(env.sample.RequestDate(date{Month: 1, Day: 1, Year: 2024})).DateID,
 			ShiftsOff: 3,
 		},
 	}))
@@ -1707,35 +2055,35 @@ func main() {
 	fmt.Println(env.sample.RequestVolunteers(env.loggedInUser, []volunteer{}))
 	fmt.Println(env.sample.RequestVFS(env.loggedInUser, []volunteerForSchedule{
 		{
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
+			Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"})).VolunteerID,
 		},
 		{
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
+			Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
 		},
 		{
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"}).VolunteerID,
+			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"})).VolunteerID,
 		},
 	}))
 	fmt.Println(env.sample.RequestUFS(env.loggedInUser, []unavailabilityForSchedule{
 		{
-			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
-			}).VFSID,
-			Date: env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024}).DateID,
+			VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"})).VolunteerID,
+			})).VFSID,
+			Date: Must(env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024})).DateID,
 		},
 		{
 			UFSID: 2,
 		},
 		{
-			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-					Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-					Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}).VolunteerID,
-			}).VFSID,
+			VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"})).VolunteerID,
+			})).VFSID,
 		},
 		{
-			Date: env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024}).DateID,
+			Date: Must(env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024})).DateID,
 		},
 	}))
 	fmt.Println(env.sample.RequestUFS(env.loggedInUser, []unavailabilityForSchedule{}))
@@ -1752,8 +2100,8 @@ func main() {
 			ScheduleName:       "test1-rename",
 			ShiftsOff:          5,
 			VolunteersPerShift: 10,
-			StartDate:          env.sample.RequestDate(date{Month: 5, Day: 7, Year: 2029}).DateID,
-			EndDate:            env.sample.RequestDate(date{Month: 9, Day: 8, Year: 2029}).DateID,
+			StartDate:          Must(env.sample.RequestDate(date{Month: 5, Day: 7, Year: 2029})).DateID,
+			EndDate:            Must(env.sample.RequestDate(date{Month: 9, Day: 8, Year: 2029})).DateID,
 		},
 		{
 			ScheduleID:   2,
@@ -1761,11 +2109,11 @@ func main() {
 		},
 		{
 			ScheduleID: 2,
-			StartDate:  env.sample.RequestDate(date{Month: 9, Day: 8, Year: 2029}).DateID,
+			StartDate:  Must(env.sample.RequestDate(date{Month: 9, Day: 8, Year: 2029})).DateID,
 		},
 		{
 			ScheduleID: 3,
-			EndDate:    env.sample.RequestDate(date{Month: 9, Day: 8, Year: 2029}).DateID,
+			EndDate:    Must(env.sample.RequestDate(date{Month: 9, Day: 8, Year: 2029})).DateID,
 		},
 		//{ScheduleName: "test6-rename", ShiftsOff: 10}, // will fail
 		//{ScheduleID: 3}, // will fail
@@ -1777,86 +2125,130 @@ func main() {
 	env.sample.UpdateWFS(env.loggedInUser, []weekdayForSchedule{
 		{
 			WFSID:   2,
-			Weekday: env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}).WeekdayName,
+			Weekday: Must(env.sample.RequestWeekday(weekday{WeekdayName: "Thursday"})).WeekdayName,
 		},
 		{
 			WFSID:    1,
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"}).ScheduleID,
+			Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"})).ScheduleID,
 		},
 	})
-	env.sample.DeleteWFS(env.loggedInUser, []weekdayForSchedule{
-		{
-			WFSID: 2,
-		},
-		{
-			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}).WeekdayName,
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"}).ScheduleID,
-		},
-	})
+	//env.sample.DeleteWFS(env.loggedInUser, []weekdayForSchedule{
+	//	{
+	//		WFSID: 2,
+	//	},
+	//	{
+	//		Weekday:  Must(env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"})).WeekdayName,
+	//		Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"}).ScheduleID,
+	//	},
+	//})
 	env.sample.CreateWFS(env.loggedInUser, []weekdayForSchedule{
 		{
 			User:     env.loggedInUser,
-			Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Wednesday"}).WeekdayName,
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"}).ScheduleID,
+			Weekday:  Must(env.sample.RequestWeekday(weekday{WeekdayName: "Wednesday"})).WeekdayName,
+			Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"})).ScheduleID,
 		},
 	})
-	env.sample.CleanOrphanedWFS(env.loggedInUser, []map[schedule][]date{
+	env.sample.CleanOrphanedWFS(env.loggedInUser, []map[schedule][]weekday{
 		{
-			env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"}): []date{{Weekday: env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}).WeekdayName}},
+			Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"})): []weekday{Must(env.sample.RequestWeekday(weekday{WeekdayName: "Sunday"}))},
 		},
-	})
-	env.sample.UpdateVFS(env.loggedInUser, []volunteerForSchedule{
-		{
-			VFSID:     9,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}).VolunteerID,
-		},
-		{
-			VFSID:    8,
-			Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-		},
-	})
-	env.sample.DeleteVFS(env.loggedInUser, []volunteerForSchedule{
-		{VFSID: 9},
-		{
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Timmy"}).VolunteerID,
-		},
-	})
-	env.sample.CreateVFS(env.loggedInUser, []volunteerForSchedule{
-		{
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"}).VolunteerID,
-		},
-	})
-	env.sample.CleanOrphanedVFS(env.loggedInUser, []map[schedule][]volunteer{
-		{
-			env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"}): []volunteer{
-				env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"}),
-				env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"}),
-				env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"}),
-				env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Timmy"}),
+	}) /*
+		env.sample.UpdateVFS(env.loggedInUser, []volunteerForSchedule{
+			{
+				VFSID:     9,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"})).VolunteerID,
 			},
-		},
-	})
-	fmt.Println(env.sample.RequestUFSSingle(env.loggedInUser, unavailabilityForSchedule{
-		VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-			Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Tim"}).VolunteerID,
-		}).VFSID,
-		Date: env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024}).DateID,
-	}))
-	fmt.Println(env.sample.RequestWFSSingle(env.loggedInUser, weekdayForSchedule{
-		Weekday:  env.sample.RequestWeekday(weekday{WeekdayName: "Wednesday"}).WeekdayName,
-		Schedule: env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"}).ScheduleID,
-	}))
-	env.sample.UpdateUFS(env.loggedInUser, []unavailabilityForSchedule{
-		{
-			UFSID: 2,
+			{
+				VFSID:    8,
+				Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+			},
+		})
+		env.sample.DeleteVFS(env.loggedInUser, []volunteerForSchedule{
+			{VFSID: 9},
+			{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Timmy"})).VolunteerID,
+			},
+		})
+		env.sample.CreateVFS(env.loggedInUser, []volunteerForSchedule{
+			{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID,
+			},
+		})
+		env.sample.CleanOrphanedVFS(env.loggedInUser, []map[schedule][]volunteer{
+			{
+				Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"})): []volunteer{
+					Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"})),
+					Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"})),
+					Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Lance"})),
+					Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Timmy"})),
+				},
+			},
+		})
+		fmt.Println(env.sample.RequestUFSSingle(env.loggedInUser, unavailabilityForSchedule{
 			VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
-				Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"}).ScheduleID,
-				Volunteer: env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"}).VolunteerID,
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Timmy"})).VolunteerID,
 			}).VFSID,
-			Date: env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024}).DateID,
+			Date: Must(env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024})).DateID,
+		}))
+		fmt.Println(env.sample.RequestWFSSingle(env.loggedInUser, weekdayForSchedule{
+			Weekday:  Must(env.sample.RequestWeekday(weekday{WeekdayName: "Thursday"})).WeekdayName,
+			Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2-rename"})).ScheduleID,
+		}))
+		env.sample.UpdateUFS(env.loggedInUser, []unavailabilityForSchedule{
+			{
+				UFSID: 2,
+				VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+					Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1-rename"})).ScheduleID,
+					Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"})).VolunteerID,
+				}).VFSID,
+				Date: Must(env.sample.RequestDate(date{Month: 1, Day: 14, Year: 2024})).DateID,
+			},
+		})
+		env.sample.CreateUFS(env.loggedInUser, []unavailabilityForSchedule{
+			{
+				User: env.loggedInUser,
+				VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+					Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+					Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Jack"})).VolunteerID,
+				}).VFSID,
+				Date: Must(env.sample.RequestDate(date{Month: 8, Day: 18, Year: 2024})).DateID,
+			},
+			{
+				User: env.loggedInUser,
+				VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+					Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+					Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"})).VolunteerID,
+				}).VFSID,
+				Date: Must(env.sample.RequestDate(date{Month: 8, Day: 25, Year: 2024})).DateID,
+			},
+		}) //*/
+	//env.sample.DeleteUFS(env.loggedInUser, []unavailabilityForSchedule{
+	//	{
+	//		UFSID: 7,
+	//	},
+	//	{
+	//		VolunteerForSchedule: env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+	//			Schedule:  env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"}).ScheduleID,
+	//			Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"})).VolunteerID,
+	//		}).VFSID,
+	//		Date: env.sample.RequestDate(date{Month: 8, Day: 25, Year: 2024}).DateID,
+	//	},
+	//})
+	/*env.sample.CleanOrphanedUFS(env.loggedInUser, []map[volunteerForSchedule][]date{
+		{
+			env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+				Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID,
+				Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "George"})).VolunteerID,
+			}): Must(env.sample.RequestDates([]date{
+				{
+					Month: 8,
+					Day:   18,
+					Year:  2024,
+				},
+			})),
 		},
 	})*/
 	fmt.Println("Done. Press enter to exit executable.")
