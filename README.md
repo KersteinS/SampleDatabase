@@ -1,4 +1,4 @@
-The purpose of this project is to create a Go program that generates and pre-fills (for internally generated data) a sqlite3 database following the below schema:
+The purpose of this project is to create a Go program that generates and pre-fills (for internally generated data) a sqlite3 database following the below schema and provides CRUD operations for each table in the database.
 
 `TableName` (`PrimaryKey-ColumnName[data-type]`,`ColumnName[data-type]`, `ForeignKey-ColumnName-SourceTable(SourceColumnName)`) `data source`:
 
