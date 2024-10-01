@@ -232,6 +232,73 @@ func simulateUpdatedSampleVFS(currentUser string, generatedVFS []volunteerForSch
 	return
 }
 
+func generateSampleUFS(currentUser string, sm SampleModel) (result []unavailabilityForSchedule) {
+	result = append(result, []unavailabilityForSchedule{
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test1"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Tim"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 1, Day: 14, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test1"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Bill"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 1, Day: 21, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test2"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Bob"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 5, Day: 12, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test2"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Lance"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 5, Day: 19, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test3"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Jack"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 8, Day: 11, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test3"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "George"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 8, Day: 18, Year: 2024})).DateID,
+		}}...)
+	return
+}
+
+func simulateCreatedSampleUFS(currentUser string, generatedUFS []unavailabilityForSchedule) (result []unavailabilityForSchedule) {
+	for i, val := range generatedUFS {
+		val.UFSID = i + 1
+		val.User = currentUser
+		result = append(result, val)
+	}
+	return
+}
+
+func simulateUpdatedSampleUFS(currentUser string, generatedUFS []unavailabilityForSchedule) (result []unavailabilityForSchedule) {
+	for i, val := range generatedUFS {
+		val.UFSID = i + 1
+		val.User = currentUser
+		result = append(result, val)
+	}
+	result[0].VolunteerForSchedule = 2
+	result[0].Date = 385
+	return
+}
+
 func checkResultsSlice[Slice []Struct, Struct comparable](t *testing.T, ans Slice, want Slice, input Slice, err error) {
 	if !slices.Equal(ans, want) {
 		if err != nil {
@@ -532,6 +599,7 @@ func TestUpdateVolunteers(t *testing.T) {
 		{name: "Update volunteers but don't provide any volunteers", input: []volunteer{}, want: simulateUpdatedSampleVolunteers(env.loggedInUser)},
 		{name: "Fail to create a duplicate volunteer (same User and VolunteerName, different VolunteerID)", input: []volunteer{{VolunteerID: 2, VolunteerName: "Timmy"}}, want: simulateUpdatedSampleVolunteers(env.loggedInUser)},
 		{name: "Try to update a nonexistent volunteer", input: []volunteer{{VolunteerID: 10, VolunteerName: "Timmy"}}, want: simulateUpdatedSampleVolunteers(env.loggedInUser)}, // the query gets no matches; so no error, but also no output
+		{name: "Fail to update because it would create a duplicate Volunteer (0 existing, 2 proposed)", input: []volunteer{{VolunteerID: 2, VolunteerName: "test2a"}, {VolunteerID: 2, VolunteerName: "test2a"}}, want: simulateUpdatedSampleVolunteers(env.loggedInUser)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -814,6 +882,8 @@ func TestUpdateSchedules(t *testing.T) {
 		{name: "Fail to update a schedule by providing an empty input struct", input: []schedule{{}}, want: simulatedUpdatedSampleSchedules},
 		{name: "Fail to update a schedule by not providing a ScheduleID", input: []schedule{{ScheduleName: "test1", ShiftsOff: 4}}, want: simulatedUpdatedSampleSchedules},
 		{name: "Fail to update a schedule by only providing a ScheduleID", input: []schedule{{ScheduleID: 1}}, want: simulatedUpdatedSampleSchedules},
+		{name: "Fail to update because it would create a duplicate Schedule (1 existing, 1 proposed)", input: []schedule{{ScheduleID: 2, ScheduleName: "test1a", ShiftsOff: 10, VolunteersPerShift: 10, StartDate: 550, EndDate: 556}}, want: simulatedUpdatedSampleSchedules},
+		{name: "Fail to update because it would create a duplicate Schedule (0 existing, 2 proposed)", input: []schedule{{ScheduleID: 2, ScheduleName: "test2a", ShiftsOff: 10, VolunteersPerShift: 10, StartDate: 550, EndDate: 556}, {ScheduleID: 3, ScheduleName: "test2a", ShiftsOff: 10, VolunteersPerShift: 10, StartDate: 550, EndDate: 556}}, want: simulatedUpdatedSampleSchedules},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -985,7 +1055,8 @@ func TestUpdateWFS(t *testing.T) {
 		{name: "Fail to update by not providing WFSID", input: []weekdayForSchedule{{Weekday: Must(env.sample.RequestWeekday(weekday{WeekdayName: "Saturday"})).WeekdayName}}, want: simulatedUpdatedSampleWFS},
 		{name: "Fail to update by providing an empty WFS struct", input: []weekdayForSchedule{{}}, want: simulatedUpdatedSampleWFS},
 		{name: "Fail to update by providing an empty WFS slice", input: []weekdayForSchedule{}, want: simulatedUpdatedSampleWFS},
-		{name: "Fail to update because it would create a duplicate WFS", input: []weekdayForSchedule{{WFSID: 2, Schedule: 4, Weekday: Must(env.sample.RequestWeekday(weekday{WeekdayName: "Saturday"})).WeekdayName}}, want: simulatedUpdatedSampleWFS},
+		{name: "Fail to update because it would create a duplicate WFS (1 existing, 1 proposed)", input: []weekdayForSchedule{{WFSID: 2, Schedule: 4, Weekday: Must(env.sample.RequestWeekday(weekday{WeekdayName: "Saturday"})).WeekdayName}}, want: simulatedUpdatedSampleWFS},
+		{name: "Fail to update because it would create a duplicate WFS (0 existing, 2 proposed)", input: []weekdayForSchedule{{WFSID: 2, Schedule: 4, Weekday: Must(env.sample.RequestWeekday(weekday{WeekdayName: "Tuesday"})).WeekdayName}, {WFSID: 3, Schedule: 4, Weekday: Must(env.sample.RequestWeekday(weekday{WeekdayName: "Tuesday"})).WeekdayName}}, want: simulatedUpdatedSampleWFS},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1226,7 +1297,8 @@ func TestUpdateVFS(t *testing.T) {
 		{name: "Fail to update by not providing VFSID", input: []volunteerForSchedule{{Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"})).VolunteerID}}, want: simulatedUpdatedSampleVFS},
 		{name: "Fail to update by providing an empty VFS struct", input: []volunteerForSchedule{{}}, want: simulatedUpdatedSampleVFS},
 		{name: "Fail to update by providing an empty VFS slice", input: []volunteerForSchedule{}, want: simulatedUpdatedSampleVFS},
-		{name: "Fail to update because it would create a duplicate VFS", input: []volunteerForSchedule{{VFSID: 3, Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"})).VolunteerID}}, want: simulatedUpdatedSampleVFS},
+		{name: "Fail to update because it would create a duplicate VFS (1 existing, 1 proposed)", input: []volunteerForSchedule{{VFSID: 3, Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test3"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"})).VolunteerID}}, want: simulatedUpdatedSampleVFS},
+		{name: "Fail to update because it would create a duplicate VFS (0 existing, 2 proposed)", input: []volunteerForSchedule{{VFSID: 3, Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"})).VolunteerID}, {VFSID: 2, Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Larry"})).VolunteerID}}, want: simulatedUpdatedSampleVFS},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1327,6 +1399,349 @@ func TestCleanOrphanedVFS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := env.sample.CleanOrphanedVFS(env.loggedInUser, tt.input)
 			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestVFS, env.loggedInUser, []volunteerForSchedule{})
+		})
+	}
+}
+
+func TestCreateUFS(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleUFS := generateSampleUFS(env.loggedInUser, env.sample)
+	simulatedCreatedSampleUFS := simulateCreatedSampleUFS(env.loggedInUser, generatedSampleUFS)
+	tests := []struct {
+		name  string
+		input []unavailabilityForSchedule
+		want  []unavailabilityForSchedule
+	}{
+		{name: "Create UFS", input: generatedSampleUFS, want: simulatedCreatedSampleUFS},
+		{name: "Fail by trying to create an existing UFS", input: []unavailabilityForSchedule{generatedSampleUFS[0]}, want: simulatedCreatedSampleUFS},
+		{name: "Fail by providing duplicate inputs", input: []unavailabilityForSchedule{{VolunteerForSchedule: 2, Date: 6}, {User: "Doesn'tMatter", VolunteerForSchedule: 2, Date: 6}}, want: simulatedCreatedSampleUFS},
+		{name: "Fail by not providing a VolunteerForSchedule", input: []unavailabilityForSchedule{{User: "Anybody", Date: 6}}, want: simulatedCreatedSampleUFS},
+		{name: "Fail by not providing a Date", input: []unavailabilityForSchedule{{User: "Anybody", VolunteerForSchedule: 2}}, want: simulatedCreatedSampleUFS},
+		{name: "Fail by providing an empty/default values UFS struct", input: []unavailabilityForSchedule{{}}, want: simulatedCreatedSampleUFS},
+		{name: "Fail by providing no input", input: []unavailabilityForSchedule{}, want: simulatedCreatedSampleUFS},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := env.sample.CreateUFS(env.loggedInUser, tt.input)
+			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestUFS, env.loggedInUser, []unavailabilityForSchedule{})
+		})
+	}
+}
+
+func TestRequestUFS(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleUFS := generateSampleUFS(env.loggedInUser, env.sample)
+	err = env.sample.CreateUFS(env.loggedInUser, generateSampleUFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateUFS failed): %v", err)
+		t.FailNow()
+	}
+	simulatedCreatedSampleUFS := simulateCreatedSampleUFS(env.loggedInUser, generatedSampleUFS)
+	tests := []struct {
+		name  string
+		input []unavailabilityForSchedule
+		want  []unavailabilityForSchedule
+	}{
+		{name: "Request all UFS", input: []unavailabilityForSchedule{}, want: simulatedCreatedSampleUFS},
+		{name: "Request a fully specified UFS", input: simulatedCreatedSampleUFS[:1], want: simulatedCreatedSampleUFS[:1]},
+		{name: "Fail by requesting an empty UFS", input: []unavailabilityForSchedule{{}}, want: []unavailabilityForSchedule{}},
+		{name: "Request a nonexistent UFS", input: []unavailabilityForSchedule{{VolunteerForSchedule: 100}}, want: []unavailabilityForSchedule{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ans, err := env.sample.RequestUFS(env.loggedInUser, tt.input)
+			checkResultsSlice(t, ans, tt.want, tt.input, err)
+		})
+	}
+}
+
+func TestRequestUFSSingle(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleUFS := generateSampleUFS(env.loggedInUser, env.sample)
+	err = env.sample.CreateUFS(env.loggedInUser, generateSampleUFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateUFS failed): %v", err)
+		t.FailNow()
+	}
+	simulatedCreatedSampleUFS := simulateCreatedSampleUFS(env.loggedInUser, generatedSampleUFS)
+	tests := []struct {
+		name  string
+		input unavailabilityForSchedule
+		want  unavailabilityForSchedule
+	}{
+		{name: "Request a fully specified UFS", input: simulatedCreatedSampleUFS[1], want: simulatedCreatedSampleUFS[1]},
+		{name: "Fail by requesting an empty UFS", input: unavailabilityForSchedule{}, want: unavailabilityForSchedule{}},
+		{name: "Fail by requesting an multiple UFS", input: unavailabilityForSchedule{User: env.loggedInUser}, want: unavailabilityForSchedule{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ans, err := env.sample.RequestUFSSingle(env.loggedInUser, tt.input)
+			checkResults(t, ans, tt.want, tt.input, err)
+		})
+	}
+}
+
+func TestUpdateUFS(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleUFS := generateSampleUFS(env.loggedInUser, env.sample)
+	err = env.sample.CreateUFS(env.loggedInUser, generateSampleUFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateUFS failed): %v", err)
+		t.FailNow()
+	}
+	simulatedUpdatedSampleUFS := simulateUpdatedSampleUFS(env.loggedInUser, generatedSampleUFS)
+	tests := []struct {
+		name  string
+		input []unavailabilityForSchedule
+		want  []unavailabilityForSchedule
+	}{
+		{name: "Update 1 UFS", input: []unavailabilityForSchedule{
+			{
+				UFSID:                1,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 1, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleUFS},
+		{name: "Update 1 UFS VolunteerForSchedule", input: []unavailabilityForSchedule{
+			{
+				UFSID:                1,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+			}}, want: simulatedUpdatedSampleUFS},
+		{name: "Update 1 UFS Date", input: []unavailabilityForSchedule{
+			{
+				UFSID: 1,
+				Date:  Must(env.sample.RequestDate(date{Month: 1, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleUFS},
+		{name: "Fail to update by only providing one value in UFS", input: []unavailabilityForSchedule{{UFSID: 1}}, want: simulatedUpdatedSampleUFS},
+		{name: "Fail to update by not providing UFSID", input: []unavailabilityForSchedule{
+			{
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 1, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleUFS},
+		{name: "Fail to update by providing an empty UFS struct", input: []unavailabilityForSchedule{{}}, want: simulatedUpdatedSampleUFS},
+		{name: "Fail to update by providing an empty UFS slice", input: []unavailabilityForSchedule{}, want: simulatedUpdatedSampleUFS},
+		{name: "Fail to update because it would create a duplicate UFS (1 existing, 1 proposed)", input: []unavailabilityForSchedule{
+			{
+				UFSID:                3,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 1, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleUFS},
+		{name: "Fail to update because it would create a duplicate UFS (0 existing, 2 proposed)", input: []unavailabilityForSchedule{
+			{
+				UFSID:                3,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 5, Day: 20, Year: 2024})).DateID,
+			},
+			{
+				UFSID:                4,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 5, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleUFS},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := env.sample.UpdateUFS(env.loggedInUser, tt.input)
+			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestUFS, env.loggedInUser, []unavailabilityForSchedule{})
+		})
+	}
+}
+
+func TestDeleteUFS(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleUFS := generateSampleUFS(env.loggedInUser, env.sample)
+	err = env.sample.CreateUFS(env.loggedInUser, generateSampleUFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateUFS failed): %v", err)
+		t.FailNow()
+	}
+	simulatedCreatedSampleUFS := simulateCreatedSampleUFS(env.loggedInUser, generatedSampleUFS)
+	tests := []struct {
+		name  string
+		input []unavailabilityForSchedule
+		want  []unavailabilityForSchedule
+	}{
+		{name: "Delete one UFS by UFSID", input: []unavailabilityForSchedule{{UFSID: 1}}, want: simulatedCreatedSampleUFS[1:]},
+		{name: "Delete one UFS by VolunteerForSchedule and Date", input: []unavailabilityForSchedule{
+			{
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+					Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+					Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID,
+				})).VFSID,
+				Date: Must(env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024})).DateID,
+			}}, want: simulatedCreatedSampleUFS[2:]},
+		{name: "Fail to delete one UFS by UFSID", input: []unavailabilityForSchedule{{UFSID: 1}}, want: simulatedCreatedSampleUFS[2:]},
+		{name: "Fail to delete one UFS by providing only VolunteerForSchedule", input: []unavailabilityForSchedule{
+			{
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+					Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+					Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"})).VolunteerID,
+				})).VFSID,
+			}}, want: simulatedCreatedSampleUFS[2:]},
+		{name: "Fail to delete by not providing any UFS structs", input: []unavailabilityForSchedule{}, want: simulatedCreatedSampleUFS[2:]},
+		{name: "Fail to delete by providing empty UFS struct", input: []unavailabilityForSchedule{{}}, want: simulatedCreatedSampleUFS[2:]},
+		{name: "Fail to delete by not providing Schedule nor Volunteer nor UFSID", input: []unavailabilityForSchedule{{User: "Doesn'tMatter"}}, want: simulatedCreatedSampleUFS[2:]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := env.sample.DeleteUFS(env.loggedInUser, tt.input)
+			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestUFS, env.loggedInUser, []unavailabilityForSchedule{})
+		})
+	}
+}
+
+func TestCleanOrphanedUFS(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleUFS := generateSampleUFS(env.loggedInUser, env.sample)
+	plusOrphanUFS := append(generatedSampleUFS, unavailabilityForSchedule{VolunteerForSchedule: 2, Date: Must(env.sample.RequestDate(date{Month: 1, Day: 28, Year: 2024})).DateID})
+	err = env.sample.CreateUFS(env.loggedInUser, plusOrphanUFS)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateUFS failed): %v", err)
+		t.FailNow()
+	}
+	simulatedCreatedSampleUFS := simulateCreatedSampleUFS(env.loggedInUser, generatedSampleUFS)
+	tests := []struct {
+		name  string
+		input []map[volunteerForSchedule][]date
+		want  []unavailabilityForSchedule
+	}{
+		{name: "Clean Orphaned UFS", input: []map[volunteerForSchedule][]date{
+			{
+				Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})): []date{
+					Must(env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024})),
+				},
+			}}, want: simulatedCreatedSampleUFS},
+		{name: "Fail by not providing a VFS with a VFSID", input: []map[volunteerForSchedule][]date{
+			{
+				volunteerForSchedule{Schedule: 1}: []date{Must(env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024}))},
+			}}, want: simulatedCreatedSampleUFS},
+		{name: "Fail by not providing a Date with a DateID", input: []map[volunteerForSchedule][]date{
+			{
+				Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})): []date{
+					{Month: 1, Day: 21, Year: 2024},
+				},
+			}}, want: simulatedCreatedSampleUFS},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := env.sample.CleanOrphanedUFS(env.loggedInUser, tt.input)
+			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestUFS, env.loggedInUser, []unavailabilityForSchedule{})
+		})
+	}
+}
+
+func TestMain(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  any
+		output any
+	}{
+		{name: "run main", input: nil, output: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Remove("./sample.db")
+			main()
 		})
 	}
 }
