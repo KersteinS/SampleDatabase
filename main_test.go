@@ -299,6 +299,73 @@ func simulateUpdatedSampleUFS(currentUser string, generatedUFS []unavailabilityF
 	return
 }
 
+func generateSampleSVOD(currentUser string, sm SampleModel) (result []scheduledVolunteerOnDate) {
+	result = append(result, []scheduledVolunteerOnDate{
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test1"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Tim"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 1, Day: 14, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test1"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Bill"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 1, Day: 21, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test2"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Bob"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 5, Day: 12, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test2"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Lance"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 5, Day: 19, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test3"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "Jack"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 8, Day: 11, Year: 2024})).DateID,
+		},
+		{
+			VolunteerForSchedule: Must(sm.RequestVFSSingle(currentUser, volunteerForSchedule{
+				Schedule:  Must(sm.RequestSchedule(currentUser, schedule{ScheduleName: "test3"})).ScheduleID,
+				Volunteer: Must(sm.RequestVolunteer(currentUser, volunteer{VolunteerName: "George"})).VolunteerID,
+			})).VFSID,
+			Date: Must(sm.RequestDate(date{Month: 8, Day: 18, Year: 2024})).DateID,
+		}}...)
+	return
+}
+
+func simulateCreatedSampleSVOD(currentUser string, generatedSVOD []scheduledVolunteerOnDate) (result []scheduledVolunteerOnDate) {
+	for i, val := range generatedSVOD {
+		val.SVODID = i + 1
+		val.User = currentUser
+		result = append(result, val)
+	}
+	return
+}
+
+func simulateUpdatedSampleSVOD(currentUser string, generatedSVOD []scheduledVolunteerOnDate) (result []scheduledVolunteerOnDate) {
+	for i, val := range generatedSVOD {
+		val.SVODID = i + 1
+		val.User = currentUser
+		result = append(result, val)
+	}
+	result[0].VolunteerForSchedule = 2
+	result[0].Date = 385
+	return
+}
+
 func checkResultsSlice[Slice []Struct, Struct comparable](t *testing.T, ans Slice, want Slice, input Slice, err error) {
 	if !slices.Equal(ans, want) {
 		if err != nil {
@@ -413,7 +480,7 @@ func TestCreateDatabase(t *testing.T) {
 	if _, err := io.Copy(h, f); err != nil {
 		t.Errorf("Error while hashing testdb file %v", err)
 	}
-	if hex.EncodeToString(h.Sum(nil)) != "5c26b4eea141e9daa7ef3b814662e30ceadb4d505bf1f0ce17a5d80ef08c8ccf" {
+	if hex.EncodeToString(h.Sum(nil)) != "8cd3e3ab2ca3ae179d7629a0af6b815845bb0e83fc1adfda197aae95cd32ec25" {
 		t.Errorf("Error: test testdb file does not match stored hash value. Computed hash: %x", h.Sum(nil))
 	}
 	if err = f.Close(); err != nil {
@@ -444,6 +511,39 @@ func TestRequestWeekday(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ans, err := testSample.RequestWeekday(tt.input)
+			checkResults(t, ans, tt.want, tt.input, err)
+		})
+	}
+}
+
+func TestRequestMonth(t *testing.T) {
+	testSample, tearDownDatabaseModel := setUpDatabaseModel(t)
+	defer tearDownDatabaseModel(t)
+	var tests = []struct {
+		name  string
+		input month
+		want  month
+	}{
+		{"Get January", month{MonthName: "January"}, month{MonthID: 1, MonthName: "January"}},
+		{"Get February", month{MonthName: "February"}, month{MonthID: 2, MonthName: "February"}},
+		{"Get March", month{MonthName: "March"}, month{MonthID: 3, MonthName: "March"}},
+		{"Get April", month{MonthName: "April"}, month{MonthID: 4, MonthName: "April"}},
+		{"Get May", month{MonthName: "May"}, month{MonthID: 5, MonthName: "May"}},
+		{"Get June", month{MonthName: "June"}, month{MonthID: 6, MonthName: "June"}},
+		{"Get July", month{MonthName: "July"}, month{MonthID: 7, MonthName: "July"}},
+		{"Get August", month{MonthName: "August"}, month{MonthID: 8, MonthName: "August"}},
+		{"Get September", month{MonthName: "September"}, month{MonthID: 9, MonthName: "September"}},
+		{"Get October", month{MonthName: "October"}, month{MonthID: 10, MonthName: "October"}},
+		{"Get November", month{MonthName: "November"}, month{MonthID: 11, MonthName: "November"}},
+		{"Get December", month{MonthName: "December"}, month{MonthID: 12, MonthName: "December"}},
+		{"Test Bad MonthID Error", month{MonthID: 13}, month{}},
+		{"Test Bad MonthNameError", month{MonthName: "Febraury"}, month{}},
+		{"Test Disagreeing MonthID and MonthName", month{MonthID: 1, MonthName: "December"}, month{}},
+		{"Test Empty Input Error", month{}, month{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ans, err := testSample.RequestMonth(tt.input)
 			checkResults(t, ans, tt.want, tt.input, err)
 		})
 	}
@@ -1726,6 +1826,333 @@ func TestCleanOrphanedUFS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := env.sample.CleanOrphanedUFS(env.loggedInUser, tt.input)
 			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestUFS, env.loggedInUser, []unavailabilityForSchedule{})
+		})
+	}
+}
+
+func TestCreateSVOD(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleSVOD := generateSampleSVOD(env.loggedInUser, env.sample)
+	simulatedCreatedSampleSVOD := simulateCreatedSampleSVOD(env.loggedInUser, generatedSampleSVOD)
+	tests := []struct {
+		name  string
+		input []scheduledVolunteerOnDate
+		want  []scheduledVolunteerOnDate
+	}{
+		{name: "Create SVOD", input: generatedSampleSVOD, want: simulatedCreatedSampleSVOD},
+		{name: "Fail by trying to create an existing SVOD", input: []scheduledVolunteerOnDate{generatedSampleSVOD[0]}, want: simulatedCreatedSampleSVOD},
+		{name: "Fail by providing duplicate inputs", input: []scheduledVolunteerOnDate{{VolunteerForSchedule: 2, Date: 6}, {User: "Doesn'tMatter", VolunteerForSchedule: 2, Date: 6}}, want: simulatedCreatedSampleSVOD},
+		{name: "Fail by not providing a VolunteerForSchedule", input: []scheduledVolunteerOnDate{{User: "Anybody", Date: 6}}, want: simulatedCreatedSampleSVOD},
+		{name: "Fail by not providing a Date", input: []scheduledVolunteerOnDate{{User: "Anybody", VolunteerForSchedule: 2}}, want: simulatedCreatedSampleSVOD},
+		{name: "Fail by providing an empty/default values SVOD struct", input: []scheduledVolunteerOnDate{{}}, want: simulatedCreatedSampleSVOD},
+		{name: "Fail by providing no input", input: []scheduledVolunteerOnDate{}, want: simulatedCreatedSampleSVOD},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := env.sample.CreateSVOD(env.loggedInUser, tt.input)
+			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestSVOD, env.loggedInUser, []scheduledVolunteerOnDate{})
+		})
+	}
+}
+
+func TestRequestSVOD(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleSVOD := generateSampleSVOD(env.loggedInUser, env.sample)
+	err = env.sample.CreateSVOD(env.loggedInUser, generateSampleSVOD(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSVOD failed): %v", err)
+		t.FailNow()
+	}
+	simulatedCreatedSampleSVOD := simulateCreatedSampleSVOD(env.loggedInUser, generatedSampleSVOD)
+	tests := []struct {
+		name  string
+		input []scheduledVolunteerOnDate
+		want  []scheduledVolunteerOnDate
+	}{
+		{name: "Request all SVOD", input: []scheduledVolunteerOnDate{}, want: simulatedCreatedSampleSVOD},
+		{name: "Request a fully specified SVOD", input: simulatedCreatedSampleSVOD[:1], want: simulatedCreatedSampleSVOD[:1]},
+		{name: "Fail by requesting an empty SVOD", input: []scheduledVolunteerOnDate{{}}, want: []scheduledVolunteerOnDate{}},
+		{name: "Request a nonexistent SVOD", input: []scheduledVolunteerOnDate{{VolunteerForSchedule: 100}}, want: []scheduledVolunteerOnDate{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ans, err := env.sample.RequestSVOD(env.loggedInUser, tt.input)
+			checkResultsSlice(t, ans, tt.want, tt.input, err)
+		})
+	}
+}
+
+func TestRequestSVODSingle(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleSVOD := generateSampleSVOD(env.loggedInUser, env.sample)
+	err = env.sample.CreateSVOD(env.loggedInUser, generateSampleSVOD(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSVOD failed): %v", err)
+		t.FailNow()
+	}
+	simulatedCreatedSampleSVOD := simulateCreatedSampleSVOD(env.loggedInUser, generatedSampleSVOD)
+	tests := []struct {
+		name  string
+		input scheduledVolunteerOnDate
+		want  scheduledVolunteerOnDate
+	}{
+		{name: "Request a fully specified SVOD", input: simulatedCreatedSampleSVOD[1], want: simulatedCreatedSampleSVOD[1]},
+		{name: "Fail by requesting an empty SVOD", input: scheduledVolunteerOnDate{}, want: scheduledVolunteerOnDate{}},
+		{name: "Fail by requesting an multiple SVOD", input: scheduledVolunteerOnDate{User: env.loggedInUser}, want: scheduledVolunteerOnDate{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ans, err := env.sample.RequestSVODSingle(env.loggedInUser, tt.input)
+			checkResults(t, ans, tt.want, tt.input, err)
+		})
+	}
+}
+
+func TestUpdateSVOD(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleSVOD := generateSampleSVOD(env.loggedInUser, env.sample)
+	err = env.sample.CreateSVOD(env.loggedInUser, generateSampleSVOD(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSVOD failed): %v", err)
+		t.FailNow()
+	}
+	simulatedUpdatedSampleSVOD := simulateUpdatedSampleSVOD(env.loggedInUser, generatedSampleSVOD)
+	tests := []struct {
+		name  string
+		input []scheduledVolunteerOnDate
+		want  []scheduledVolunteerOnDate
+	}{
+		{name: "Update 1 SVOD", input: []scheduledVolunteerOnDate{
+			{
+				SVODID:               1,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 1, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleSVOD},
+		{name: "Update 1 SVOD VolunteerForSchedule", input: []scheduledVolunteerOnDate{
+			{
+				SVODID:               1,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+			}}, want: simulatedUpdatedSampleSVOD},
+		{name: "Update 1 SVOD Date", input: []scheduledVolunteerOnDate{
+			{
+				SVODID: 1,
+				Date:   Must(env.sample.RequestDate(date{Month: 1, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleSVOD},
+		{name: "Fail to update by only providing one value in SVOD", input: []scheduledVolunteerOnDate{{SVODID: 1}}, want: simulatedUpdatedSampleSVOD},
+		{name: "Fail to update by not providing SVODID", input: []scheduledVolunteerOnDate{
+			{
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 1, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleSVOD},
+		{name: "Fail to update by providing an empty SVOD struct", input: []scheduledVolunteerOnDate{{}}, want: simulatedUpdatedSampleSVOD},
+		{name: "Fail to update by providing an empty SVOD slice", input: []scheduledVolunteerOnDate{}, want: simulatedUpdatedSampleSVOD},
+		{name: "Fail to update because it would create a duplicate SVOD (1 existing, 1 proposed)", input: []scheduledVolunteerOnDate{
+			{
+				SVODID:               3,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 1, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleSVOD},
+		{name: "Fail to update because it would create a duplicate SVOD (0 existing, 2 proposed)", input: []scheduledVolunteerOnDate{
+			{
+				SVODID:               3,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 5, Day: 20, Year: 2024})).DateID,
+			},
+			{
+				SVODID:               4,
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})).VFSID,
+				Date:                 Must(env.sample.RequestDate(date{Month: 5, Day: 20, Year: 2024})).DateID,
+			}}, want: simulatedUpdatedSampleSVOD},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := env.sample.UpdateSVOD(env.loggedInUser, tt.input)
+			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestSVOD, env.loggedInUser, []scheduledVolunteerOnDate{})
+		})
+	}
+}
+
+func TestDeleteSVOD(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleSVOD := generateSampleSVOD(env.loggedInUser, env.sample)
+	err = env.sample.CreateSVOD(env.loggedInUser, generateSampleSVOD(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSVOD failed): %v", err)
+		t.FailNow()
+	}
+	simulatedCreatedSampleSVOD := simulateCreatedSampleSVOD(env.loggedInUser, generatedSampleSVOD)
+	tests := []struct {
+		name  string
+		input []scheduledVolunteerOnDate
+		want  []scheduledVolunteerOnDate
+	}{
+		{name: "Delete one SVOD by SVODID", input: []scheduledVolunteerOnDate{{SVODID: 1}}, want: simulatedCreatedSampleSVOD[1:]},
+		{name: "Delete one SVOD by VolunteerForSchedule and Date", input: []scheduledVolunteerOnDate{
+			{
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+					Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID,
+					Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID,
+				})).VFSID,
+				Date: Must(env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024})).DateID,
+			}}, want: simulatedCreatedSampleSVOD[2:]},
+		{name: "Fail to delete one SVOD by SVODID", input: []scheduledVolunteerOnDate{{SVODID: 1}}, want: simulatedCreatedSampleSVOD[2:]},
+		{name: "Fail to delete one SVOD by providing only VolunteerForSchedule", input: []scheduledVolunteerOnDate{
+			{
+				VolunteerForSchedule: Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{
+					Schedule:  Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test2"})).ScheduleID,
+					Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bob"})).VolunteerID,
+				})).VFSID,
+			}}, want: simulatedCreatedSampleSVOD[2:]},
+		{name: "Fail to delete by not providing any SVOD structs", input: []scheduledVolunteerOnDate{}, want: simulatedCreatedSampleSVOD[2:]},
+		{name: "Fail to delete by providing empty SVOD struct", input: []scheduledVolunteerOnDate{{}}, want: simulatedCreatedSampleSVOD[2:]},
+		{name: "Fail to delete by not providing Schedule nor Volunteer nor SVODID", input: []scheduledVolunteerOnDate{{User: "Doesn'tMatter"}}, want: simulatedCreatedSampleSVOD[2:]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := env.sample.DeleteSVOD(env.loggedInUser, tt.input)
+			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestSVOD, env.loggedInUser, []scheduledVolunteerOnDate{})
+		})
+	}
+}
+
+func TestCleanOrphanedSVOD(t *testing.T) {
+	env, tearDownEnvironment := setUpEnvironment(t)
+	defer tearDownEnvironment(t)
+	generatedSampleSchedules := generateSampleSchedules(env.sample)
+	err := env.sample.CreateSchedulesExtended(env.loggedInUser, generatedSampleSchedules, true)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSchedulesExtended failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVolunteers(env.loggedInUser, sampleVolunteers)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVolunteers failed): %v", err)
+		t.FailNow()
+	}
+	err = env.sample.CreateVFS(env.loggedInUser, generateSampleVFS(env.loggedInUser, env.sample))
+	if err != nil {
+		t.Errorf("Error setting up test (CreateVFS failed): %v", err)
+		t.FailNow()
+	}
+	generatedSampleSVOD := generateSampleSVOD(env.loggedInUser, env.sample)
+	plusOrphanSVOD := append(generatedSampleSVOD, scheduledVolunteerOnDate{VolunteerForSchedule: 2, Date: Must(env.sample.RequestDate(date{Month: 1, Day: 28, Year: 2024})).DateID})
+	err = env.sample.CreateSVOD(env.loggedInUser, plusOrphanSVOD)
+	if err != nil {
+		t.Errorf("Error setting up test (CreateSVOD failed): %v", err)
+		t.FailNow()
+	}
+	simulatedCreatedSampleSVOD := simulateCreatedSampleSVOD(env.loggedInUser, generatedSampleSVOD)
+	tests := []struct {
+		name  string
+		input []map[volunteerForSchedule][]date
+		want  []scheduledVolunteerOnDate
+	}{
+		{name: "Clean Orphaned SVOD", input: []map[volunteerForSchedule][]date{
+			{
+				Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})): []date{
+					Must(env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024})),
+				},
+			}}, want: simulatedCreatedSampleSVOD},
+		{name: "Fail by not providing a VFS with a VFSID", input: []map[volunteerForSchedule][]date{
+			{
+				volunteerForSchedule{Schedule: 1}: []date{Must(env.sample.RequestDate(date{Month: 1, Day: 21, Year: 2024}))},
+			}}, want: simulatedCreatedSampleSVOD},
+		{name: "Fail by not providing a Date with a DateID", input: []map[volunteerForSchedule][]date{
+			{
+				Must(env.sample.RequestVFSSingle(env.loggedInUser, volunteerForSchedule{Schedule: Must(env.sample.RequestSchedule(env.loggedInUser, schedule{ScheduleName: "test1"})).ScheduleID, Volunteer: Must(env.sample.RequestVolunteer(env.loggedInUser, volunteer{VolunteerName: "Bill"})).VolunteerID})): []date{
+					{Month: 1, Day: 21, Year: 2024},
+				},
+			}}, want: simulatedCreatedSampleSVOD},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := env.sample.CleanOrphanedSVOD(env.loggedInUser, tt.input)
+			checkResultsErrOnly(t, tt.input, err, tt.want, env.sample.RequestSVOD, env.loggedInUser, []scheduledVolunteerOnDate{})
 		})
 	}
 }

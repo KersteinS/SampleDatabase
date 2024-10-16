@@ -87,11 +87,11 @@ type unavailabilityForSchedule struct {
 	Date                 int
 }
 
-type completedSchedule struct {
-	CScheduleID  string
-	ScheduleData string
-	User         string
-	Schedule     string
+type scheduledVolunteerOnDate struct {
+	SVODID               int
+	User                 string
+	VolunteerForSchedule int
+	Date                 int
 }
 
 type SendReceiveDataStruct struct {
@@ -211,13 +211,14 @@ func (sm SampleModel) CreateDatabase() error {
 		foreign key (VolunteerForSchedule) references VolunteersForSchedule(VFSID),
 		foreign key (Date) references Dates(DateID)
 	);
-	create table CompletedSchedules (
-		CScheduleID integer primary key autoincrement,
-		ScheduleData text not null,
+	create table scheduledVolunteersOnDates (
+		SVODID integer primary key autoincrement,
 		User text,
-		Schedule integer,
+		VolunteerForSchedule integer,
+		Date integer,
 		foreign key (User) references Users(UserName),
-		foreign key (Schedule) references Schedules(ScheduleID)
+		foreign key (VolunteerForSchedule) references VolunteersForSchedule(VFSID),
+		foreign key (Date) references Dates(DateID)
 	);
 	`
 	fillWeekdaysTxQuery := `insert into Weekdays (WeekdayName) values ("Sunday"), ("Monday"), ("Tuesday"), ("Wednesday"), ("Thursday"), ("Friday"), ("Saturday");`
@@ -265,7 +266,7 @@ func (sm SampleModel) CreateDatabase() error {
 	return nil
 }
 
-func (sm SampleModel) SendScheduleNames(currentUser string) []string {
+func (sm SampleModel) SendScheduleNames(currentUser string) ([]string, error) { // TODO
 	var result []string
 	scheduleStructs, err := sm.RequestSchedules(currentUser, []schedule{})
 	if err != nil {
@@ -274,23 +275,23 @@ func (sm SampleModel) SendScheduleNames(currentUser string) []string {
 	for i := 0; i < len(scheduleStructs); i++ {
 		result = append(result, scheduleStructs[i].ScheduleName)
 	}
-	return result
+	return result, nil
 }
 
-func (sm SampleModel) FetchAndSendData(currentUser string, currentSchedule string) SendReceiveDataStruct {
+func (sm SampleModel) FetchAndSendData(currentUser string, currentSchedule string) (SendReceiveDataStruct, error) { // TODO
 	var result SendReceiveDataStruct
 	scheduleQuery := fmt.Sprintf(`select StartDate, EndDate, ShiftsOff, VolunteersPerShift from Schedules where User = "%s" and ScheduleName = "%s"`, currentUser, currentSchedule)
 	fmt.Println(scheduleQuery)
 	result.User = currentUser
 	result.ScheduleName = currentSchedule
-	return result
+	return result, nil
 }
 
-func (sm SampleModel) RecieveAndStoreData(data SendReceiveDataStruct) { // should this return a completed/failed value?
-	// fill this in
+func (sm SampleModel) RecieveAndStoreData(data SendReceiveDataStruct) error { // TODO
+	return nil
 }
 
-// This function exists to validate WeekdayName spelling and provide WeekdayID if needed. There is no request Weekdays
+// This function exists to validate WeekdayName spelling and provide WeekdayID if needed. There is no RequestWeekdays method
 func (sm SampleModel) RequestWeekday(weekdayStruct weekday) (weekday, error) {
 	if weekdayStruct == (weekday{}) {
 		return weekday{}, errors.New("error in RequestWeekday: method failed because all of the values in weekdayStruct had an empty/default values")
@@ -315,9 +316,39 @@ func (sm SampleModel) RequestWeekday(weekdayStruct weekday) (weekday, error) {
 		return weekday{}, fmt.Errorf("error in RequestWeekday: sql.Rows.Err error: %w", err)
 	}
 	if len(weekdays) != 1 {
-		return weekday{}, fmt.Errorf("failed to locate exactly one weekday matching `%+v`. Found %d matches", weekdayStruct, len(weekdays))
+		return weekday{}, fmt.Errorf("error in RequestWeekday: method failed to locate exactly one weekday matching `%+v`. Found %d matches", weekdayStruct, len(weekdays))
 	}
 	return weekdays[0], nil
+}
+
+// This function exists to validate MonthName spelling and provide MonthID if needed. There is no RequestMonths method
+func (sm SampleModel) RequestMonth(monthStruct month) (month, error) {
+	if monthStruct == (month{}) {
+		return month{}, errors.New("error in RequestMonth: method failed because all of the values in monthStruct had an empty/default values")
+	}
+	var months []month
+	monthQuery := fmt.Sprintf(`select * from Months where MonthID=%d or MonthName="%s"`, monthStruct.MonthID, monthStruct.MonthName)
+	rows, err := sm.DB.Query(monthQuery)
+	if err != nil {
+		return month{}, fmt.Errorf("error in RequestMonth: sql.DB.Query error: %w. Value of monthQuery is `%s`", err, monthQuery)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var monthStruct month
+		err = rows.Scan(&monthStruct.MonthID, &monthStruct.MonthName)
+		if err != nil {
+			return month{}, fmt.Errorf("error in RequestMonth: sql.Rows.Scan error: %w. Value of monthStruct is `%+v`", err, monthStruct)
+		}
+		months = append(months, monthStruct)
+	}
+	err = rows.Err()
+	if err != nil {
+		return month{}, fmt.Errorf("error in RequestMonth: sql.Rows.Err error: %w", err)
+	}
+	if len(months) != 1 {
+		return month{}, fmt.Errorf("error in RequestMonth: method failed to locate exactly one month matching `%+v`. Found %d matches", monthStruct, len(months))
+	}
+	return months[0], nil
 }
 
 func (sm SampleModel) RequestDate(dateStruct date) (date, error) {
@@ -1805,12 +1836,279 @@ func (sm SampleModel) CleanOrphanedUFS(currentUser string, correctUFS []map[volu
 	return nil
 }
 
-func (sm SampleModel) CreateCompletedSchedule(currentUser string, toCreate completedSchedule) { // figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in
+func (sm SampleModel) CreateSVOD(currentUser string, toCreate []scheduledVolunteerOnDate) error { // TODO
+	check, err := sm.RequestSVOD(currentUser, toCreate)
+	if err != nil {
+		return fmt.Errorf("error in CreateSVOD: %w", err)
+	}
+	if len(check) > 0 {
+		return fmt.Errorf("error in CreateSVOD: method failed because at least one of the scheduledVolunteerOnDate entries to be created already exists in the database. Existing scheduledVolunteerOnDate entry(s): %+v", check)
+	}
+	checkDuplicates := []scheduledVolunteerOnDate{}
+	for _, val := range toCreate { // User and SVODID do not need to be provided in the scheduledVolunteerOnDate structs
+		if val.VolunteerForSchedule == (scheduledVolunteerOnDate{}.VolunteerForSchedule) {
+			return fmt.Errorf("error in CreateSVOD: method failed because at least one of the scheduledVolunteerOnDate structs in toCreate did not have a value for VolunteerForSchedule: %+v", val)
+		}
+		if val.Date == (scheduledVolunteerOnDate{}.Date) {
+			return fmt.Errorf("error in CreateSVOD: method failed because at least one of the scheduledVolunteerOnDate structs in toCreate did not have a value for Date: %+v", val)
+		}
+		if !slices.Contains(checkDuplicates, scheduledVolunteerOnDate{VolunteerForSchedule: val.VolunteerForSchedule, Date: val.Date}) {
+			checkDuplicates = append(checkDuplicates, scheduledVolunteerOnDate{VolunteerForSchedule: val.VolunteerForSchedule, Date: val.Date})
+		} else {
+			return fmt.Errorf("error in CreateSVOD: method failed because at least one of the scheduledVolunteerOnDate structs in toCreate was a duplicate of another scheduledVolunteerOnDate struct in toCreate: %+v", val)
+		}
+	}
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("error in CreateSVOD: sql.DB.Begin error: %w", err)
+	}
+	defer tx.Rollback()
+	fillSVODTableString := `insert into ScheduledVolunteersOnDates (User, VolunteerForSchedule, Date) values (?, ?, ?)`
+	fillVFSTableStmt, err := tx.Prepare(fillSVODTableString)
+	if err != nil {
+		return fmt.Errorf("error in CreateSVOD: sql.Tx.Prepare error: %w. Value of fillSVODTableString is `%s`", err, fillSVODTableString)
+	}
+	defer fillVFSTableStmt.Close()
+	for i := 0; i < len(toCreate); i++ {
+		_, err = fillVFSTableStmt.Exec(currentUser, toCreate[i].VolunteerForSchedule, toCreate[i].Date)
+		if err != nil {
+			return fmt.Errorf("error in CreateSVOD: sql.Stmt.Exec error: %w. Value of toCreate[i] is `%+v`", err, toCreate[i])
+		}
+	}
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("error in CreateSVOD: sql.Tx.Commit error: %w", err)
+	}
+	return nil
 }
 
-func (sm SampleModel) DeleteCompletedSchedule(currentUser string, existingSchedule string, toDelete string) { // how to identify what to delete? Figure out what to return as a completed/failed value, instead of just crashing the program
-	// fill this in
+func (sm SampleModel) RequestSVODSingle(currentUser string, scheduledVolunteerOnDateStruct scheduledVolunteerOnDate) (scheduledVolunteerOnDate, error) { // TODO
+	scheduledVolunteersOnDates, err := sm.RequestSVOD(currentUser, []scheduledVolunteerOnDate{scheduledVolunteerOnDateStruct})
+	if err != nil {
+		return scheduledVolunteerOnDate{}, fmt.Errorf("error in RequestSVODSingle: %w", err)
+	}
+	if len(scheduledVolunteersOnDates) != 1 {
+		return scheduledVolunteerOnDate{}, fmt.Errorf("error in RequestSVODSingle: method failed to locate exactly one SVOD matching %+v. Found %d matches", scheduledVolunteerOnDateStruct, len(scheduledVolunteersOnDates))
+	}
+	return scheduledVolunteersOnDates[0], nil
+}
+
+func (sm SampleModel) RequestSVOD(currentUser string, scheduledVolunteersOnDates []scheduledVolunteerOnDate) ([]scheduledVolunteerOnDate, error) { // TODO
+	SVODQuery := fmt.Sprintf(`select * from scheduledVolunteersOnDates where User = "%s"`, currentUser)
+	if len(scheduledVolunteersOnDates) > 0 {
+		if check, failed := testEmpty(scheduledVolunteersOnDates, scheduledVolunteerOnDate{}); check {
+			return []scheduledVolunteerOnDate{}, fmt.Errorf("error in RequestSVOD: method failed because one of the values in scheduledVolunteersOnDates had an empty/default values volunteerForSchedule struct: %+v", failed)
+		}
+		SVODQuery = fmt.Sprintf(`%s and (`, SVODQuery)
+	}
+	for i := 0; i < len(scheduledVolunteersOnDates); i++ {
+		count := countGTZero([]int{scheduledVolunteersOnDates[i].SVODID, len(scheduledVolunteersOnDates[i].User), scheduledVolunteersOnDates[i].VolunteerForSchedule, scheduledVolunteersOnDates[i].Date})
+		SVODQuery = fmt.Sprintf(`%s(`, SVODQuery)
+		if scheduledVolunteersOnDates[i].SVODID > 0 {
+			SVODQuery = fmt.Sprintf(`%sSVODID = %d`, SVODQuery, scheduledVolunteersOnDates[i].SVODID)
+			count--
+			if count > 0 {
+				SVODQuery = fmt.Sprintf(`%s and `, SVODQuery)
+			}
+		}
+		if len(scheduledVolunteersOnDates[i].User) > 0 {
+			SVODQuery = fmt.Sprintf(`%sUser = "%s"`, SVODQuery, scheduledVolunteersOnDates[i].User)
+			count--
+			if count > 0 {
+				SVODQuery = fmt.Sprintf(`%s and `, SVODQuery)
+			}
+		}
+		if scheduledVolunteersOnDates[i].VolunteerForSchedule > 0 {
+			SVODQuery = fmt.Sprintf(`%sVolunteerForSchedule = %d`, SVODQuery, scheduledVolunteersOnDates[i].VolunteerForSchedule)
+			count--
+			if count > 0 {
+				SVODQuery = fmt.Sprintf(`%s and `, SVODQuery)
+			}
+		}
+		if scheduledVolunteersOnDates[i].Date > 0 {
+			SVODQuery = fmt.Sprintf(`%sDate = %d`, SVODQuery, scheduledVolunteersOnDates[i].Date)
+		}
+		SVODQuery = fmt.Sprintf(`%s)`, SVODQuery)
+		if i+1 < len(scheduledVolunteersOnDates) {
+			SVODQuery = fmt.Sprintf(`%s or `, SVODQuery)
+		}
+		//fmt.Println(count)
+		//fmt.Println(SVODQuery)
+	}
+	if len(scheduledVolunteersOnDates) > 0 {
+		SVODQuery = fmt.Sprintf(`%s)`, SVODQuery)
+	}
+	//fmt.Println(SVODQuery)
+	var result []scheduledVolunteerOnDate
+	rows, err := sm.DB.Query(SVODQuery)
+	if err != nil {
+		return []scheduledVolunteerOnDate{}, fmt.Errorf("error in RequestSVOD: sql.DB.Query error: %w. Value of SVODQuery is `%s`", err, SVODQuery)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var SVODStruct scheduledVolunteerOnDate
+		err = rows.Scan(&SVODStruct.SVODID, &SVODStruct.User, &SVODStruct.VolunteerForSchedule, &SVODStruct.Date)
+		if err != nil {
+			return []scheduledVolunteerOnDate{}, fmt.Errorf("error in RequestSVOD: sql.Rows.Scan error: %w. Value of SVODStruct is `%+v`", err, SVODStruct)
+		}
+		result = append(result, SVODStruct)
+	}
+	err = rows.Err()
+	if err != nil {
+		return []scheduledVolunteerOnDate{}, fmt.Errorf("error in RequestSVOD: sql.Rows.Err error: %w", err)
+	}
+	return result, nil
+}
+
+func (sm SampleModel) UpdateSVOD(currentUser string, toUpdate []scheduledVolunteerOnDate) error { // TODO
+	if check, failed := testEmpty(toUpdate, scheduledVolunteerOnDate{}); check {
+		return fmt.Errorf("error in UpdateSVOD: method failed because one of the values in toUpdate had an empty/default values scheduledVolunteerOnDate struct: %+v", failed)
+	}
+	head := `update scheduledVolunteersOnDates set`
+	tail := fmt.Sprintf(`where User="%s" and SVODID=?`, currentUser)
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("error in UpdateSVOD: sql.DB.Begin error: %w", err)
+	}
+	defer tx.Rollback()
+	checkDuplicates := []scheduledVolunteerOnDate{}
+	for _, val := range toUpdate {
+		if val.SVODID == 0 {
+			return fmt.Errorf("error in UpdateSVOD: method failed because one of the values in toUpdate had an empty/default value for SVODID: %+v", val)
+		}
+		currentSVOD, err := sm.RequestSVODSingle(currentUser, scheduledVolunteerOnDate{SVODID: val.SVODID})
+		if err != nil {
+			return fmt.Errorf("error in UpdateSVOD: %w", err)
+		}
+		if !slices.Contains(checkDuplicates, scheduledVolunteerOnDate{VolunteerForSchedule: val.VolunteerForSchedule, Date: val.Date}) {
+			checkDuplicates = append(checkDuplicates, scheduledVolunteerOnDate{VolunteerForSchedule: val.VolunteerForSchedule, Date: val.Date})
+		} else {
+			return fmt.Errorf("error in UpdateSVOD: method failed because at least two of the scheduledVolunteerOnDate structs in toUpdate would create duplicate scheduledVolunteerOnDate structs in the database: %+v", scheduledVolunteerOnDate{VolunteerForSchedule: val.VolunteerForSchedule, Date: val.Date})
+		}
+		currentSVOD.SVODID = 0
+		updateSVODString := head
+		count := countGTZero([]int{val.SVODID, len(val.User), val.VolunteerForSchedule, val.Date})
+		count-- // This is needed because a SVODID has been provided (verified at the start of this loop).
+		if count == 0 {
+			return fmt.Errorf("error in UpdateSVOD: method failed because only one value was provided in an scheduledVolunteerOnDate struct. At least two values (a SVODID and a value to update) must be provided: %+v", val)
+		}
+		// count is at least 1
+		//fmt.Println(count)
+		//fmt.Println(updateSVODString)
+		if val.VolunteerForSchedule > 0 {
+			updateSVODString = fmt.Sprintf(`%s VolunteerForSchedule=%d`, updateSVODString, val.VolunteerForSchedule)
+			count--
+			currentSVOD.VolunteerForSchedule = val.VolunteerForSchedule
+			if count > 0 {
+				updateSVODString = fmt.Sprintf(`%s,`, updateSVODString)
+			}
+			//fmt.Println(count)
+			//fmt.Println(updateSVODString)
+		}
+		if val.Date > 0 {
+			updateSVODString = fmt.Sprintf(`%s Date=%d`, updateSVODString, val.Date)
+			//fmt.Println(count)
+			//fmt.Println(updateSVODString)
+			currentSVOD.Date = val.Date
+		}
+		updateSVODString = fmt.Sprintf(`%s %s`, updateSVODString, tail)
+		//fmt.Println(count)
+		//fmt.Println(updateSVODString)
+		if check, err := sm.RequestSVOD(currentUser, []scheduledVolunteerOnDate{currentSVOD}); err != nil {
+			return fmt.Errorf("error in UpdateSVOD: %w", err)
+		} else if len(check) > 0 {
+			return fmt.Errorf("error in UpdateSVOD: method failed because it would create a duplicate SVOD: %+v", val)
+		}
+		updateSchedulesStmt, err := tx.Prepare(updateSVODString)
+		if err != nil {
+			return fmt.Errorf("error in UpdateSVOD: sql.Stmt.Prepare error: %w. Value of updateSVODString is `%s`", err, updateSVODString)
+		}
+		defer updateSchedulesStmt.Close()
+		_, err = updateSchedulesStmt.Exec(val.SVODID)
+		if err != nil {
+			return fmt.Errorf("error in UpdateSVOD: sql.Stmt.Exec error: %w. Value of val is `%+v`", err, val)
+		}
+	}
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("error in UpdateSVOD: sql.Tx.Commit error: %w", err)
+	}
+	return nil
+}
+
+// Will delete SVOD database entries that match the SVODID or that match the VFS and Date provided in each SVOD struct. If a SVODID > 0 is provided, the values for VFS and Date are ignored for that SVOD struct.
+func (sm SampleModel) DeleteSVOD(currentUser string, toDelete []scheduledVolunteerOnDate) error { // TODO
+	for _, val := range toDelete {
+		if val.SVODID < 1 && (val.VolunteerForSchedule < 1 || val.Date < 1) {
+			return fmt.Errorf("error in DeleteSVOD: method failed because one of the scheduledVolunteerOnDate structs did not have a value for SVODID or VolunteerForSchedule and Date: %+v", val)
+		}
+	}
+	tx, err := sm.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("error in DeleteSVOD: sql.DB.Begin error: %w", err)
+	}
+	defer tx.Rollback()
+	for _, val := range toDelete {
+		var deleteSVODString string
+		if val.SVODID > 0 {
+			deleteSVODString = fmt.Sprintf(`delete from scheduledVolunteersOnDates where User="%s" and SVODID=%d`, currentUser, val.SVODID)
+		} else {
+			deleteSVODString = fmt.Sprintf(`delete from scheduledVolunteersOnDates where User="%s" and VolunteerForSchedule=%d and Date=%d`, currentUser, val.VolunteerForSchedule, val.Date)
+		}
+		_, err := tx.Exec(deleteSVODString)
+		if err != nil {
+			return fmt.Errorf("error in DeleteSVOD: sql.Tx.Exec error: %w. Value of deleteSVODString is `%s`", err, deleteSVODString)
+		}
+	}
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("error in DeleteSVOD: sql.Tx.Commit error: %w", err)
+	}
+	return nil
+}
+
+func (sm SampleModel) CleanOrphanedSVOD(currentUser string, correctSVOD []map[volunteerForSchedule][]date) error {
+	var SVODToDelete []string
+	for _, VFSDatesPair := range correctSVOD {
+		for key, value := range VFSDatesPair {
+			if key.VFSID == 0 {
+				return fmt.Errorf("error in CleanOrphanedSVOD: method failed because one of the provided volunteerForSchedule structs did not have a VFSID: %+v", map[volunteerForSchedule][]date{key: value})
+			}
+			var dates []int
+			for _, dateStruct := range value {
+				if dateStruct.DateID < 1 {
+					return fmt.Errorf("error in CleanOrphanedSVOD: method failed because one of the provided date structs did not have a DateID: %+v", map[volunteerForSchedule][]date{key: value})
+				}
+				dates = append(dates, dateStruct.DateID)
+			}
+			SVODCheck, err := sm.RequestSVOD(currentUser, []scheduledVolunteerOnDate{{VolunteerForSchedule: key.VFSID}})
+			if err != nil {
+				return fmt.Errorf("error in CleanOrphanedSVOD: %w", err)
+			}
+			for _, SVOD := range SVODCheck {
+				if !slices.Contains(dates, SVOD.Date) {
+					SVODToDelete = append(SVODToDelete, strconv.Itoa(SVOD.SVODID))
+					//fmt.Println(SVODToDelete)
+				}
+			}
+		}
+		tx, err := sm.DB.Begin()
+		if err != nil {
+			return fmt.Errorf("error in CleanOrphanedSVOD: sql.DB.Begin error: %w", err)
+		}
+		defer tx.Rollback()
+		deleteSVODQuery := fmt.Sprintf(`delete from scheduledVolunteersOnDates where User = "%s" and SVODID in (%s)`, currentUser, CsvSlice(SVODToDelete, true))
+		//fmt.Println(deleteSVODQuery)
+		_, err = tx.Exec(deleteSVODQuery)
+		if err != nil {
+			return fmt.Errorf("error in CleanOrphanedSVOD: sql.Tx.Exec error: %w. Value of deleteSVODQuery is `%s`", err, deleteSVODQuery)
+		}
+		err = tx.Commit()
+		if err != nil {
+			return fmt.Errorf("error in CleanOrphanedSVOD: sql.Tx.Commit error: %w", err)
+		}
+	}
+	return nil
 }
 
 /*
@@ -1823,14 +2121,11 @@ Delete
 Weekdays, Months, and Dates are readonly.
 What data will be requested by the app?
 	List of schedule names for a user;
-	A schedule joined with its UFS (joined to its VFS (joined to its Volunteers)) and its WFS for a user;
-	Completed schedules for a user;
+	A schedule joined with its UFS (joined with its VFS (joined with its Volunteers)) and its WFS for a user;
+	Completed schedules represented in the database as a schedule joined with its SVOD (joined with its VFS (joined with its Volunteers)) for a user;
 What data will be sent by the app?
 	A schedule struct including all the data needed to create/update rows on Schedules, Volunteers, WFS, VFS, and UFS
-	A completed schedule struct to create a new row on CompletedSchedules
-What Delete options are needed?
-	Delete Schedule should delete a single row on Schedules and multiple rows on WFS, VFS, UFS, and CompletedSchedules
-	Delete Completed Schedule should delete a single row on CompletedSchedules
+	A completed schedule struct to create new rows in SVOD
 
 This does not contemplate CRUDing users yet.
 */
